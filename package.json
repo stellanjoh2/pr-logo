@@ -1,0 +1,21 @@
+{
+  "name": "polyrig",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "gsap": "^3.13.0",
+    "mp4-muxer": "^5.2.2",
+    "three": "^0.175.0",
+    "tweakpane": "^4.0.5"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  }
+}
