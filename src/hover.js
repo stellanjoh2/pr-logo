@@ -47,7 +47,7 @@ const DEFAULT_PARAMS = {
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
   dotRadiusScale: 3.2,
-  hoverDepth: 0.06,
+  hoverDepth: 0.8,
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
@@ -68,7 +68,7 @@ const DEFAULT_PARAMS = {
   layerWhite: true,
   background: '#000000',
   emissiveStrength: 0.4,
-  bloom: true,
+  bloom: false,
   bloomIntensity: 0,
   fxaa: true,
 };
