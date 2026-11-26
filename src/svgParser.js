@@ -17,7 +17,7 @@ export const DEFAULT_WIREFRAME_LINE_WIDTH = 1.5;
 export const DEFAULT_DOT_PIXEL_SIZE = 6;
 const WIREFRAME_EMISSIVE_BOOST = 1.25;
 /** Default spacing between the 3 primary logo planes (wire+dots / colored / white). */
-export const DEFAULT_LOGO_DEPTH = 0.01;
+export const DEFAULT_LOGO_DEPTH = 0.188;
 /** Merge SVG triangle corners that land on the same point into one shared vertex. */
 const VERTEX_MERGE_DECIMALS = 4;
 
