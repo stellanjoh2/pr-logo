@@ -4,6 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Pane } from 'tweakpane';
 import defaultSvg from '../pr02.svg?raw';
 import {
@@ -41,6 +42,7 @@ function downloadBlob(blob, filename) {
 }
 
 const DEFAULT_PARAMS = {
+  hoverMode: 'hole',
   hoverRadius: 0.08,
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
@@ -67,7 +69,7 @@ const DEFAULT_PARAMS = {
   background: '#000000',
   emissiveStrength: 0.4,
   bloom: true,
-  bloomIntensity: 0.3,
+  bloomIntensity: 0,
   fxaa: true,
 };
 
@@ -128,6 +130,8 @@ function applyUrlColor(key) {
 for (const key of EMBED_COLOR_KEYS) applyUrlColor(key);
 
 {
+  const mode = urlParams.get('hoverMode');
+  if (mode === 'lift' || mode === 'hole') params.hoverMode = mode;
   const style = urlParams.get('hoverStyle');
   if (style === 'smooth' || style === 'digital' || style === 'hard') {
     params.hoverStyle = style;
@@ -151,11 +155,18 @@ const VISIBLE_EPSILON = 0.002;
 const DOT_SIZE_IDLE = 0.5;
 const DOT_SIZE_PEAK = 1.25;
 
-/** Hover-driven layers: white lifts most, then construction, then wire; dots scale only. */
+function isHoleMode() {
+  return params.hoverMode === 'hole';
+}
+
+/**
+ * Hover-driven layers: white lifts most, then construction, then wire; dots scale only.
+ * In hole mode the front layers peel over the widest radius, so white and wire swap radii.
+ */
 const HOVER_LAYERS = [
-  { key: 'white', radiusScale: () => 1, depthScale: 1 },
+  { key: 'white', radiusScale: () => (isHoleMode() ? params.wireRadiusScale : 1), depthScale: 1 },
   { key: 'colored', radiusScale: () => params.coloredRadiusScale, depthScale: 0.55 },
-  { key: 'wire', radiusScale: () => params.wireRadiusScale, depthScale: 0.25 },
+  { key: 'wire', radiusScale: () => (isHoleMode() ? 1 : params.wireRadiusScale), depthScale: 0.25 },
   { key: 'dots', radiusScale: () => params.dotRadiusScale, depthScale: 0 },
 ];
 
@@ -170,7 +181,9 @@ const camera = new THREE.PerspectiveCamera(
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
-  alpha: true,
+  // Alpha only for transparent embeds — otherwise the CSS black body shows through
+  // postprocessing and the Background picker looks "stuck" on black.
+  alpha: transparentMode,
   premultipliedAlpha: true,
 });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -178,14 +191,24 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.domElement.style.touchAction = 'none';
 document.body.appendChild(renderer.domElement);
 
+function resolveBackgroundColor() {
+  return new THREE.Color(params.background);
+}
+
 function applyBackground() {
   if (transparentMode) {
     scene.background = null;
     renderer.setClearColor(0x000000, 0);
+    document.documentElement.style.background = 'transparent';
+    document.body.style.background = 'transparent';
     return;
   }
-  scene.background = new THREE.Color(params.background);
-  renderer.setClearColor(0x000000, 1);
+  const color = resolveBackgroundColor();
+  scene.background = color;
+  renderer.setClearColor(color, 1);
+  const hex = `#${color.getHexString()}`;
+  document.documentElement.style.background = hex;
+  document.body.style.background = hex;
 }
 
 applyBackground();
@@ -209,6 +232,8 @@ fxaaPass.material.uniforms.resolution.value.set(
   1 / Math.max(window.innerHeight, 1),
 );
 composer.addPass(fxaaPass);
+const outputPass = new OutputPass();
+composer.addPass(outputPass);
 syncPostProcessingOutputs();
 applyChromaticAberrationToPass(aberrationPass, params.aberration);
 
@@ -472,27 +497,50 @@ function easeToward(current, target, dt) {
   return Math.abs(next - target) < 0.0005 ? target : next;
 }
 
+/**
+ * Lift: layers fade in with their hover value (dots always shown).
+ * Hole: layers start opaque and peel away; each back layer only shows once the
+ * layer in front has started peeling, so depth parallax can't leak at rest.
+ */
+function layerOpacity(tri, key, value) {
+  if (!isHoleMode()) return key === 'dots' ? 1 : value;
+  const { hover } = tri;
+  if (key === 'white') return 1 - value;
+  if (key === 'colored') return hover.white * (1 - value);
+  if (key === 'wire') return hover.colored * (1 - value);
+  return hover.colored;
+}
+
 function applyHoverIntensity(tri, key, value, depthScale = 1) {
   const parts = getLayerParts(tri, key);
+  const opacity = layerOpacity(tri, key, value);
 
   if (key === 'dots') {
-    // Dots stay visible; only their size reacts to the heatmap.
     applyDotHoverScale(tri, value);
-    if (tri.hoverShown[key] === value) return;
-    tri.hoverShown[key] = value;
+    if (tri.hoverShown[key] === opacity) return;
+    tri.hoverShown[key] = opacity;
+    parts.mesh.visible = opacity > VISIBLE_EPSILON;
+    parts.dotMeshes.forEach((mesh) => setFaceOpacity(mesh.material, opacity));
     return;
   }
 
   const { mesh, material, home } = parts;
   // Brightness and Z share the same eased value so pieces settle back as they dim.
-  const lift = value * params.hoverDepth * depthScale;
-  mesh.position.z = home.z + lift;
+  // Lift raises layers toward the camera; hole sinks them away from it.
+  const offset = value * params.hoverDepth * depthScale * (isHoleMode() ? -1 : 1);
+  mesh.position.z = home.z + offset;
 
-  if (tri.hoverShown[key] === value) return;
-  tri.hoverShown[key] = value;
+  if (tri.hoverShown[key] === opacity) return;
+  tri.hoverShown[key] = opacity;
 
-  mesh.visible = value > VISIBLE_EPSILON || Math.abs(lift) > VISIBLE_EPSILON;
-  setFaceOpacity(material, value);
+  mesh.visible = opacity > VISIBLE_EPSILON;
+  setFaceOpacity(material, opacity);
+}
+
+function invalidateHoverShown() {
+  triangles.forEach((tri) => {
+    tri.hoverShown = emptyHoverMap(-1);
+  });
 }
 
 function updatePointerHits() {
@@ -540,6 +588,9 @@ function updateHover(dt) {
         target = target >= DIGITAL_THRESHOLD ? 1 : 0;
       }
       tri.hover[key] = hardPop ? target : easeToward(tri.hover[key], target, dt);
+    }
+    // Applied after all layers update: hole-mode opacity reads neighbouring layers.
+    for (const { key, depthScale } of HOVER_LAYERS) {
       applyHoverIntensity(tri, key, tri.hover[key], depthScale);
     }
   }
@@ -660,6 +711,7 @@ function buildEmbedUrl({ transparent = false } = {}) {
   for (const key of EMBED_COLOR_KEYS) {
     url.searchParams.set(key, String(params[key]).replace(/^#/, ''));
   }
+  url.searchParams.set('hoverMode', params.hoverMode);
   url.searchParams.set('hoverStyle', params.hoverStyle);
   url.searchParams.set('bloom', params.bloom ? '1' : '0');
   url.searchParams.set('fxaa', params.fxaa ? '1' : '0');
@@ -699,10 +751,12 @@ function syncPostProcessingOutputs() {
   bloomPass.threshold = BLOOM_THRESHOLD;
   fxaaPass.enabled = fxaaOn;
 
-  // Last enabled effect owns the screen; earlier passes feed the chain.
-  bloomPass.renderToScreen = bloomOn && !aberOn && !fxaaOn;
-  aberrationPass.renderToScreen = aberOn && !fxaaOn;
-  fxaaPass.renderToScreen = fxaaOn;
+  // Earlier passes feed the chain; OutputPass owns the screen so linear → sRGB
+  // is applied (without it, mid-gray backgrounds look nearly black).
+  bloomPass.renderToScreen = false;
+  aberrationPass.renderToScreen = false;
+  fxaaPass.renderToScreen = false;
+  outputPass.renderToScreen = true;
 }
 
 function updateAberrationPass() {
@@ -847,6 +901,13 @@ function setupControls() {
   setUiVisible(false);
   mountUiLegend();
 
+  pane
+    .addBinding(params, 'hoverMode', {
+      label: 'Hover mode',
+      options: { Lift: 'lift', 'Inverted (hole)': 'hole' },
+    })
+    .on('change', () => invalidateHoverShown());
+
   const hoverFolder = pane.addFolder({ title: 'Hover', expanded: true });
   hoverFolder.addBinding(params, 'hoverRadius', {
     label: 'Hover radius',
@@ -901,11 +962,7 @@ function setupControls() {
       label: 'Style',
       options: { Smooth: 'smooth', Digital: 'digital', Hard: 'hard' },
     })
-    .on('change', () => {
-      triangles.forEach((tri) => {
-        tri.hoverShown = emptyHoverMap(-1);
-      });
-    });
+    .on('change', () => invalidateHoverShown());
 
   const layersFolder = pane.addFolder({ title: 'Layers', expanded: true });
   layersFolder
