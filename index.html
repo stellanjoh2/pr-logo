@@ -115,6 +115,40 @@
         opacity: 1;
       }
 
+      #ui-legend {
+        position: fixed;
+        left: 50%;
+        bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+        transform: translateX(-50%);
+        z-index: 15;
+        padding: 10px 16px;
+        border: 1px solid var(--pr-border);
+        background: rgb(17 17 17 / 0.88);
+        color: var(--pr-muted);
+        font: 500 12px/1.4 'Geist Sans', system-ui, sans-serif;
+        letter-spacing: 0.03em;
+        text-align: center;
+        white-space: nowrap;
+        pointer-events: none;
+        opacity: 1;
+        transition: opacity 0.7s var(--pr-ease);
+      }
+
+      #ui-legend kbd {
+        display: inline-block;
+        margin: 0 0.2em;
+        padding: 1px 7px;
+        border: 1px solid var(--pr-border-strong);
+        background: var(--pr-bg-raised);
+        color: var(--pr-text-strong);
+        font: 600 11px/1.4 'Geist Sans', system-ui, sans-serif;
+        letter-spacing: 0.06em;
+      }
+
+      #ui-legend.is-faded {
+        opacity: 0;
+      }
+
       .tp-dfwv.polyrig-pane-host {
         top: 0 !important;
         right: 0 !important;
@@ -368,6 +402,7 @@
   <body>
     <input id="file-input" type="file" accept=".svg,image/svg+xml" />
     <div id="record-status"></div>
+    <div id="ui-legend">Press <kbd>H</kbd> to show UI</div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

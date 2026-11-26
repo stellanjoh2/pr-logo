@@ -211,7 +211,7 @@ let cameraModeBinding = null;
 let orbitSpeedBinding = null;
 let playPauseButton = null;
 let animationPaused = false;
-let uiVisible = true;
+let uiVisible = false;
 let finalizeTimeline = null;
 let holdTimeline = null;
 let logoScaleTimeline = null;
@@ -1669,6 +1669,14 @@ function toggleUi() {
   setUiVisible(!uiVisible);
 }
 
+function mountUiLegend() {
+  const el = document.getElementById('ui-legend');
+  if (!el) return;
+  window.setTimeout(() => {
+    el.classList.add('is-faded');
+  }, 3000);
+}
+
 function usesPostProcessing() {
   return params.bloom || isChromaticAberrationActive(params.aberration) || params.fxaa;
 }
@@ -1767,6 +1775,8 @@ function setupControls() {
   pane = new Pane();
   mountPaneBrandHeader();
   mountPaneFooter();
+  setUiVisible(false);
+  mountUiLegend();
 
   const cameraFolder = pane.addFolder({ title: 'Camera', expanded: true });
   cameraModeBinding = cameraFolder
