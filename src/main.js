@@ -460,7 +460,7 @@ function mountPaneFooter() {
   const hideBtn = document.createElement('button');
   hideBtn.type = 'button';
   hideBtn.className = 'polyrig-pane-hide';
-  hideBtn.textContent = 'Hide UI';
+  hideBtn.textContent = 'Hide UI (H)';
   hideBtn.addEventListener('click', () => toggleUi());
   footer.appendChild(hideBtn);
 
@@ -553,6 +553,7 @@ function loadSvg(svgText) {
     shapeCentroid = getShapeCentroid(triangles);
     applyCurrentLayerAppearance();
     updateWireframeLineResolutions(triangles, window.innerWidth, window.innerHeight);
+    frameCameraToLogo();
 
     playReveal();
   } catch (error) {
@@ -1241,10 +1242,7 @@ function playReveal() {
   stopAnimations();
   resetFinalState();
   hideColoredLayer(triangles);
-  // Orbit keeps its continuous path across loops — only free reframes each reveal.
-  if (params.cameraMode === 'free') {
-    frameCameraToLogo();
-  }
+  // Free/orbit keep the current camera across loops; cinematic reframes via startCameraSequence.
   startCameraSequence();
   revealPhase = 'dots';
   buildRevealTimeline({ reverse: false, layer: 'dots' });
