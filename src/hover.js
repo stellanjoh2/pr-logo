@@ -44,7 +44,8 @@ const DEFAULT_PARAMS = {
   hoverRadius: 0.08,
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
-  hoverDepth: 1.2,
+  dotRadiusScale: 3.2,
+  hoverDepth: 1.17,
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
@@ -52,12 +53,12 @@ const DEFAULT_PARAMS = {
   colorMode: 'override',
   overrideColor: DEFAULT_CONSTRUCTION_COLOR,
   wireframeColor: DEFAULT_WIREFRAME_COLOR,
-  dotColor: '#fff865',
+  dotColor: '#e064ff',
   constructionColor: DEFAULT_CONSTRUCTION_COLOR,
   solidColor: DEFAULT_SOLID_COLOR,
   wireframeLineWidth: DEFAULT_WIREFRAME_LINE_WIDTH,
   dotPixelSize: DEFAULT_DOT_PIXEL_SIZE,
-  logoDepth: 0.25,
+  logoDepth: 0.5,
   layerDots: true,
   layerWireframe: true,
   layerColored: true,
@@ -65,7 +66,7 @@ const DEFAULT_PARAMS = {
   background: '#000000',
   emissiveStrength: 0.4,
   bloom: true,
-  bloomIntensity: 0.65,
+  bloomIntensity: 0.3,
   fxaa: true,
 };
 
@@ -80,12 +81,16 @@ const CAMERA_FOV = 35;
 const BLOOM_THRESHOLD = 0.82;
 const DIGITAL_THRESHOLD = 0.5;
 const VISIBLE_EPSILON = 0.002;
+/** Idle dots are half the base size; peak hover is 25% above base. */
+const DOT_SIZE_IDLE = 0.5;
+const DOT_SIZE_PEAK = 1.25;
 
-/** Hover-driven layers: white lifts most, then construction, then wire. */
+/** Hover-driven layers: white lifts most, then construction, then wire; dots scale only. */
 const HOVER_LAYERS = [
   { key: 'white', radiusScale: () => 1, depthScale: 1 },
   { key: 'colored', radiusScale: () => params.coloredRadiusScale, depthScale: 0.55 },
   { key: 'wire', radiusScale: () => params.wireRadiusScale, depthScale: 0.25 },
+  { key: 'dots', radiusScale: () => params.dotRadiusScale, depthScale: 0 },
 ];
 
 const scene = new THREE.Scene();
@@ -169,12 +174,14 @@ const layerHits = {
   white: new THREE.Vector3(),
   colored: new THREE.Vector3(),
   wire: new THREE.Vector3(),
+  dots: new THREE.Vector3(),
 };
-const layerHitValid = { white: false, colored: false, wire: false };
+const layerHitValid = { white: false, colored: false, wire: false, dots: false };
 
 function getLayerGroup(key) {
   if (key === 'white') return logoLayers.whiteLayer;
   if (key === 'colored') return logoLayers.coloredLayer;
+  if (key === 'dots') return logoLayers.dotsLayer;
   return logoLayers.wireLayer;
 }
 
@@ -193,11 +200,30 @@ function getLayerParts(tri, key) {
       home: tri.homePosition,
     };
   }
+  if (key === 'dots') {
+    return {
+      mesh: tri.dotMesh,
+      home: tri.dotHomePosition,
+      dotMeshes: tri.dotFaceMeshes,
+    };
+  }
   return {
     mesh: tri.wireMesh,
     material: tri.wireFaceMesh.material,
     home: tri.wireHomePosition,
   };
+}
+
+function dotSizeFactor(value) {
+  return DOT_SIZE_IDLE + value * (DOT_SIZE_PEAK - DOT_SIZE_IDLE);
+}
+
+function applyDotHoverScale(tri, value) {
+  const factor = dotSizeFactor(value);
+  tri.dotFaceMeshes.forEach((mesh) => {
+    const base = mesh.userData.baseDotSize ?? 0;
+    mesh.scale.setScalar(base * factor);
+  });
 }
 
 function clearLogo() {
@@ -280,6 +306,13 @@ function applyWireframeLineWidths() {
 function refreshVertexDotSizes() {
   const size = renderer.getSize(new THREE.Vector2());
   updateVertexDotSizes(triangles, camera, size.x, size.y, params.dotPixelSize);
+  // Cache the neutral pixel-derived size so hover can scale around it.
+  triangles.forEach((tri) => {
+    tri.dotFaceMeshes?.forEach((mesh) => {
+      mesh.userData.baseDotSize = mesh.scale.x;
+    });
+    applyDotHoverScale(tri, tri.hover?.dots ?? 0);
+  });
 }
 
 function applyCurrentLayerAppearance() {
@@ -299,10 +332,14 @@ function showDotsLayer() {
   });
 }
 
+function emptyHoverMap(fill) {
+  return { white: fill, colored: fill, wire: fill, dots: fill };
+}
+
 function resetHoverState() {
   triangles.forEach((tri) => {
-    tri.hover = { white: 0, colored: 0, wire: 0 };
-    tri.hoverShown = { white: -1, colored: -1, wire: -1 };
+    tri.hover = emptyHoverMap(0);
+    tri.hoverShown = emptyHoverMap(-1);
     for (const { key, depthScale } of HOVER_LAYERS) {
       applyHoverIntensity(tri, key, 0, depthScale);
     }
@@ -354,7 +391,17 @@ function easeToward(current, target, dt) {
 }
 
 function applyHoverIntensity(tri, key, value, depthScale = 1) {
-  const { mesh, material, home } = getLayerParts(tri, key);
+  const parts = getLayerParts(tri, key);
+
+  if (key === 'dots') {
+    // Dots stay visible; only their size reacts to the heatmap.
+    applyDotHoverScale(tri, value);
+    if (tri.hoverShown[key] === value) return;
+    tri.hoverShown[key] = value;
+    return;
+  }
+
+  const { mesh, material, home } = parts;
   // Brightness and Z share the same eased value so pieces settle back as they dim.
   const lift = value * params.hoverDepth * depthScale;
   mesh.position.z = home.z + lift;
@@ -665,6 +712,12 @@ function setupControls() {
     max: 8,
     step: 0.05,
   });
+  hoverFolder.addBinding(params, 'dotRadiusScale', {
+    label: 'Dots ×',
+    min: 1,
+    max: 10,
+    step: 0.05,
+  });
   hoverFolder.addBinding(params, 'hoverDepth', {
     label: 'Hover depth',
     min: 0,
@@ -696,7 +749,7 @@ function setupControls() {
     })
     .on('change', () => {
       triangles.forEach((tri) => {
-        tri.hoverShown = { white: -1, colored: -1, wire: -1 };
+        tri.hoverShown = emptyHoverMap(-1);
       });
     });
 
