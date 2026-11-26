@@ -1,4 +1,9 @@
 import * as THREE from 'three';
+import {
+  setFaceOpacity,
+  hideBehindLayersForTri,
+  showBehindLayersForTri,
+} from './svgParser.js';
 
 const tmpVec = new THREE.Vector3();
 const SPAWN_DEPTH_SCALE = 0.1;
@@ -51,33 +56,87 @@ export function shouldUseBlinkTweens(pattern, reverse) {
   return isDigitalBlinkPattern(pattern) || reverse;
 }
 
-export const DISSOLVE_DURATION_SCALE = 0.5;
+export const BLINK_FPS = 30;
+export const BLINK_FRAME_HOLD = 2;
+export const BLINK_COUNT = 2;
 
-function getDissolveBlinkTimings(duration, options) {
-  return getDigitalBlinkTimings(duration * DISSOLVE_DURATION_SCALE, options);
+export const DOT_BLINK_FPS = BLINK_FPS;
+export const DOT_BLINK_FRAME_HOLD = BLINK_FRAME_HOLD;
+export const DOT_BLINK_COUNT = BLINK_COUNT;
+
+export function getBlinkStepDuration() {
+  return BLINK_FRAME_HOLD / BLINK_FPS;
 }
 
-export function getDigitalBlinkTimings(
-  duration = 2,
-  { triangleCount = 1, staggerSpread = 0.65 } = {},
-) {
-  const maxDelay = duration * staggerSpread;
-  const staggerStep = triangleCount > 1 ? maxDelay / (triangleCount - 1) : maxDelay;
-  const pulse = Math.min(0.022, Math.max(0.004, staggerStep * 0.55));
-
-  return {
-    blinkOn: pulse,
-    blinkOff: pulse * 0.75,
-    gap: pulse * 0.4,
-  };
+export function getDigitalBlinkDuration() {
+  return getBlinkStepDuration() * (BLINK_COUNT * 2 + 1);
 }
 
-export function getDigitalBlinkDuration(
-  duration = 2,
-  staggerOptions = {},
+export function getDotBlinkDuration() {
+  return getDigitalBlinkDuration();
+}
+
+export function getDotBlinkStepDuration() {
+  return getBlinkStepDuration();
+}
+
+function buildBlinkPhases(dissolve = false) {
+  const phases = [];
+  for (let i = 0; i < BLINK_COUNT; i++) {
+    phases.push(dissolve ? 0 : 1, dissolve ? 1 : 0);
+  }
+  phases.push(dissolve ? 0 : 1);
+  return phases;
+}
+
+function scheduleBlinkOpacityHold(timeline, materials, opacity, t, onOpacity) {
+  timeline.call(() => {
+    setMaterialOpacity(materials, opacity);
+    onOpacity?.(opacity);
+  }, null, t);
+  return t + getBlinkStepDuration();
+}
+
+export function buildDotRevealTweens(
+  timeline,
+  targets,
+  { startOffset = 0 } = {},
 ) {
-  const { blinkOn, blinkOff, gap } = getDigitalBlinkTimings(duration, staggerOptions);
-  return blinkOn * 3 + blinkOff * 2 + gap * 2;
+  for (const { tri, delay } of targets) {
+    const materials = getBlinkMaterials(tri);
+
+    tri.mesh.position.copy(tri.homePosition);
+    tri.mesh.scale.copy(tri.homeScale);
+    tri.mesh.visible = true;
+    setMaterialOpacity(materials, 0);
+
+    const t = startOffset + delay;
+    timeline.call(() => setMaterialOpacity(materials, 1), null, t);
+  }
+}
+
+export function buildDotDissolveTweens(
+  timeline,
+  targets,
+  { startOffset = 0 } = {},
+) {
+  for (const { delay, materials, meshes } of targets) {
+    const t = startOffset + delay;
+
+    timeline.call(() => setMaterialOpacity(materials, 0), null, t);
+
+    for (const mesh of meshes) {
+      timeline.set(mesh, { visible: false }, t);
+    }
+  }
+}
+
+export function buildDotBlinkTweens(timeline, targets, options = {}) {
+  return buildDotRevealTweens(timeline, targets, options);
+}
+
+export function buildDotDissolveBlinkTweens(timeline, targets, options = {}) {
+  return buildDotDissolveTweens(timeline, targets, options);
 }
 
 export function computeStartState(triangle, pattern, params, shapeCentroid, staggerDelay) {
@@ -181,55 +240,30 @@ function getBlinkMaterials(tri) {
 
 function setMaterialOpacity(materials, opacity) {
   for (const mat of materials) {
-    mat.opacity = opacity;
+    setFaceOpacity(mat, opacity);
   }
 }
 
 export function buildDissolveBlinkTweens(
   timeline,
   targets,
-  { duration = 2, staggerSpread = 0.65, startOffset = 0 } = {},
+  { startOffset = 0 } = {},
 ) {
-  const { blinkOn, blinkOff, gap } = getDissolveBlinkTimings(duration, {
-    triangleCount: targets.length,
-    staggerSpread,
-  });
+  const phases = buildBlinkPhases(true);
 
-  for (const { delay, materials, meshes } of targets) {
-    for (const mat of materials) {
-      mat.opacity = 1;
+  for (const { delay, materials, meshes, sourceTri } of targets) {
+    setMaterialOpacity(materials, 1);
+
+    let t = startOffset + delay;
+    for (const opacity of phases) {
+      t = scheduleBlinkOpacityHold(timeline, materials, opacity, t);
     }
-
-    let t = startOffset + delay * DISSOLVE_DURATION_SCALE;
-    const steps = [
-      { opacity: 0, duration: blinkOff },
-      { opacity: 1, duration: blinkOn },
-      { opacity: 0, duration: blinkOff },
-      { opacity: 1, duration: blinkOn },
-      { opacity: 0, duration: blinkOff },
-    ];
-
-    steps.forEach((step, index) => {
-      for (const mat of materials) {
-        timeline.to(
-          mat,
-          {
-            opacity: step.opacity,
-            duration: step.duration,
-            ease: 'none',
-            immediateRender: false,
-          },
-          t,
-        );
-      }
-      t += step.duration;
-      if (index === 0 || index === 2) {
-        t += gap;
-      }
-    });
 
     for (const mesh of meshes) {
       timeline.set(mesh, { visible: false }, t);
+    }
+    if (sourceTri) {
+      timeline.call(() => showBehindLayersForTri(sourceTri), null, t);
     }
   }
 }
@@ -237,143 +271,63 @@ export function buildDissolveBlinkTweens(
 export function buildDigitalBlinkTweens(
   timeline,
   targets,
-  { reverse = false, emissiveStrength = 0, duration = 2, staggerSpread = 0.65 } = {},
+  { reverse = false, emissiveStrength = 0, startOffset = 0 } = {},
 ) {
-  const timeScale = reverse ? DISSOLVE_DURATION_SCALE : 1;
-  const { blinkOn, blinkOff, gap } = getDigitalBlinkTimings(duration * timeScale, {
-    triangleCount: targets.length,
-    staggerSpread,
-  });
+  const phases = buildBlinkPhases(reverse);
   const flashEmissive = (settle) =>
     settle <= 0.01 ? 0 : Math.min(settle + 0.12, settle * 1.15);
 
-  for (const { tri, delay } of targets) {
+  for (const { tri, delay, sourceTri } of targets) {
     const materials = getBlinkMaterials(tri);
     const mat = materials[0];
     const emissiveTarget = getEmissiveTweenTarget(mat);
-    const settleEmissive = emissiveStrength;
+    const settleEmissive = reverse
+      ? mat.isLineMaterial && emissiveTarget
+        ? emissiveTarget.emissiveIntensity
+        : mat.emissiveIntensity ?? 0
+      : emissiveStrength;
     const emissiveOff = settleEmissive <= 0.01 || !emissiveTarget;
 
     tri.mesh.position.copy(tri.homePosition);
     tri.mesh.scale.copy(tri.homeScale);
     tri.mesh.visible = true;
+    setMaterialOpacity(materials, reverse ? 1 : 0);
+    if (!emissiveOff) {
+      syncEmissiveGlow(mat, reverse ? settleEmissive : 0);
+    }
 
-    if (!reverse) {
-      setMaterialOpacity(materials, 0);
+    let t = startOffset + delay;
+    for (let i = 0; i < phases.length; i++) {
+      const opacity = phases[i];
+      const isLast = i === phases.length - 1;
+
+      timeline.call(() => setMaterialOpacity(materials, opacity), null, t);
+
       if (!emissiveOff) {
-        syncEmissiveGlow(mat, 0);
+        const emissiveIntensity =
+          opacity === 0
+            ? 0
+            : isLast && !reverse
+              ? settleEmissive
+              : isLast
+                ? 0
+                : flashEmissive(settleEmissive);
+        timeline.call(() => syncEmissiveGlow(mat, emissiveIntensity), null, t);
       }
 
-      let t = delay;
-      const blinks = emissiveOff
-        ? [
-            { opacity: 1, duration: blinkOn },
-            { opacity: 0, duration: blinkOff },
-            { opacity: 1, duration: blinkOn },
-            { opacity: 0, duration: blinkOff },
-            { opacity: 1, duration: blinkOn },
-          ]
-        : [
-            { opacity: 1, emissiveIntensity: flashEmissive(settleEmissive), duration: blinkOn },
-            { opacity: 0, emissiveIntensity: 0, duration: blinkOff },
-            { opacity: 1, emissiveIntensity: flashEmissive(settleEmissive), duration: blinkOn },
-            { opacity: 0, emissiveIntensity: 0, duration: blinkOff },
-            { opacity: 1, emissiveIntensity: settleEmissive, duration: blinkOn },
-          ];
+      // Hide behind layers only after white finishes settling — not during blink gaps.
+      if (sourceTri && isLast && !reverse && opacity > 0.01) {
+        timeline.call(() => hideBehindLayersForTri(sourceTri), null, t);
+      }
 
-      blinks.forEach((step, index) => {
-        for (const material of materials) {
-          timeline.to(
-            material,
-            {
-              opacity: step.opacity,
-              duration: step.duration,
-              ease: 'none',
-              immediateRender: false,
-            },
-            t,
-          );
-        }
+      t += getBlinkStepDuration();
+    }
 
-        if (!emissiveOff) {
-          timeline.to(
-            emissiveTarget,
-            {
-              emissiveIntensity: step.emissiveIntensity,
-              duration: step.duration,
-              ease: 'none',
-              immediateRender: false,
-              onUpdate: () => syncEmissiveGlow(mat, emissiveTarget.emissiveIntensity),
-            },
-            t,
-          );
-        }
-
-        t += step.duration;
-        if (index === 1 || index === 3) {
-          t += gap;
-        }
-      });
-    } else {
-      setMaterialOpacity(materials, 1);
-      const baseEmissive =
-        mat.isLineMaterial && emissiveTarget
-          ? emissiveTarget.emissiveIntensity
-          : mat.emissiveIntensity ?? 0;
-      const reverseEmissiveOff = baseEmissive <= 0.01 || !emissiveTarget;
-
-      let t = delay * timeScale;
-      const blinks = reverseEmissiveOff
-        ? [
-            { opacity: 0, duration: blinkOff },
-            { opacity: 1, duration: blinkOn },
-            { opacity: 0, duration: blinkOff },
-            { opacity: 1, duration: blinkOn },
-            { opacity: 0, duration: blinkOff },
-          ]
-        : [
-            { opacity: 0, emissiveIntensity: 0, duration: blinkOff },
-            { opacity: 1, emissiveIntensity: flashEmissive(baseEmissive), duration: blinkOn },
-            { opacity: 0, emissiveIntensity: 0, duration: blinkOff },
-            { opacity: 1, emissiveIntensity: flashEmissive(baseEmissive), duration: blinkOn },
-            { opacity: 0, emissiveIntensity: 0, duration: blinkOff },
-          ];
-
-      blinks.forEach((step, index) => {
-        for (const material of materials) {
-          timeline.to(
-            material,
-            {
-              opacity: step.opacity,
-              duration: step.duration,
-              ease: 'none',
-              immediateRender: false,
-            },
-            t,
-          );
-        }
-
-        if (!reverseEmissiveOff) {
-          timeline.to(
-            emissiveTarget,
-            {
-              emissiveIntensity: step.emissiveIntensity,
-              duration: step.duration,
-              ease: 'none',
-              immediateRender: false,
-              onUpdate: () => syncEmissiveGlow(mat, emissiveTarget.emissiveIntensity),
-            },
-            t,
-          );
-        }
-
-        t += step.duration;
-        if (index === 0 || index === 2) {
-          t += gap;
-        }
-      });
-
+    if (reverse) {
       timeline.set(tri.mesh, { visible: false }, t);
+      if (sourceTri) {
+        timeline.call(() => showBehindLayersForTri(sourceTri), null, t);
+      }
     }
   }
 }
@@ -384,10 +338,10 @@ export function applyStateToMesh(triangle, state) {
   if (state.opacity !== undefined) {
     if (triangle.dotFaceMeshes?.length) {
       triangle.dotFaceMeshes.forEach((mesh) => {
-        mesh.material.opacity = state.opacity;
+        setFaceOpacity(mesh.material, state.opacity);
       });
     } else {
-      triangle.faceMesh.material.opacity = state.opacity;
+      setFaceOpacity(triangle.faceMesh.material, state.opacity);
     }
   }
 }
@@ -397,9 +351,9 @@ export function resetToHome(triangle) {
   triangle.mesh.scale.copy(triangle.homeScale);
   if (triangle.dotFaceMeshes?.length) {
     triangle.dotFaceMeshes.forEach((mesh) => {
-      mesh.material.opacity = 1;
+      setFaceOpacity(mesh.material, 1);
     });
   } else {
-    triangle.faceMesh.material.opacity = 1;
+    setFaceOpacity(triangle.faceMesh.material, 1);
   }
 }

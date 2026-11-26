@@ -4,14 +4,17 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 
 const CLASS_COLORS = {
-  st0: '#ff8ee3',
-  st1: '#6b00e2',
-  st2: '#fe00d2',
+  st0: '#ff4400',
+  st1: '#ffc400',
+  st2: '#c300ff',
 };
 
 const PALETTE = Object.values(CLASS_COLORS);
-const WIREFRAME_COLOR = CLASS_COLORS.st1;
-const WIREFRAME_LINE_WIDTH = 2.5;
+export const DEFAULT_WIREFRAME_COLOR = '#00bbff';
+export const DEFAULT_CONSTRUCTION_COLOR = '#ff4a1c';
+export const DEFAULT_SOLID_COLOR = '#ffffff';
+export const DEFAULT_WIREFRAME_LINE_WIDTH = 1;
+export const DEFAULT_DOT_PIXEL_SIZE = 2;
 const WIREFRAME_EMISSIVE_BOOST = 1.25;
 const LAYER_Z_STEP = 0.006;
 const WIREFRAME_LAYER_Z_OFFSET = -1.5 * LAYER_Z_STEP;
@@ -20,8 +23,6 @@ const COLORED_LAYER_Z_OFFSET = 0.5 * LAYER_Z_STEP;
 const WHITE_LAYER_Z_OFFSET = 1.5 * LAYER_Z_STEP;
 const WIREFRAME_CHIP_Z_EPSILON = 0.00005;
 const DOTS_CHIP_Z_EPSILON = 0.000075;
-const WHITE_CHIP_Z_EPSILON = 0.0001;
-const DOT_PIXEL_SIZE = 8;
 
 export function parseSvgTriangles(svgText) {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
@@ -84,8 +85,8 @@ export function parseSvgTriangles(svgText) {
     const wireGeometry = createTriangleWireGeometry(localVerts);
 
     const wireMaterial = new LineMaterial({
-      color: new THREE.Color(WIREFRAME_COLOR),
-      linewidth: WIREFRAME_LINE_WIDTH,
+      color: new THREE.Color(DEFAULT_WIREFRAME_COLOR),
+      linewidth: DEFAULT_WIREFRAME_LINE_WIDTH,
       transparent: true,
       opacity: 1,
       depthTest: true,
@@ -147,17 +148,15 @@ export function parseSvgTriangles(svgText) {
 
     const whiteGeometry = createFlatTriangleGeometry(localVerts);
     const whiteMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      side: THREE.DoubleSide,
-      transparent: true,
+      color: new THREE.Color(DEFAULT_SOLID_COLOR),
+      side: THREE.FrontSide,
+      transparent: false,
       opacity: 1,
       depthTest: true,
       depthWrite: true,
       toneMapped: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -4,
-      polygonOffsetUnits: -4,
     });
+    whiteMaterial.userData.solidWhenOpaque = true;
     const whiteFaceMesh = new THREE.Mesh(whiteGeometry, whiteMaterial);
     whiteFaceMesh.frustumCulled = false;
     whiteFaceMesh.renderOrder = raw.index + 1000;
@@ -165,7 +164,6 @@ export function parseSvgTriangles(svgText) {
     whiteChip.frustumCulled = false;
     whiteChip.add(whiteFaceMesh);
     whiteChip.position.copy(centroid3);
-    whiteChip.position.z += raw.index * WHITE_CHIP_Z_EPSILON;
     whiteChip.visible = false;
     whiteLayer.add(whiteChip);
 
@@ -231,8 +229,7 @@ export function resetDotsLayer(triangles) {
     tri.dotMesh.position.copy(tri.dotHomePosition);
     tri.dotMesh.scale.copy(tri.homeScale);
     tri.dotFaceMeshes.forEach((mesh) => {
-      mesh.material.opacity = 0;
-      mesh.material.color.set(0xffffff);
+      setFaceOpacity(mesh.material, 0);
     });
   });
 }
@@ -242,15 +239,51 @@ export function resetWhiteLayer(triangles) {
     tri.whiteMesh.visible = false;
     tri.whiteMesh.position.copy(tri.whiteHomePosition);
     tri.whiteMesh.scale.copy(tri.homeScale);
-    tri.whiteFaceMesh.material.opacity = 0;
-    tri.whiteFaceMesh.material.color.set(0xffffff);
+    setFaceOpacity(tri.whiteFaceMesh.material, 0);
   });
+}
+
+export function setFaceOpacity(material, opacity) {
+  material.opacity = opacity;
+  if (!material.userData.solidWhenOpaque) return;
+
+  const transparent = opacity < 0.999;
+  if (material.transparent !== transparent) {
+    material.transparent = transparent;
+    material.needsUpdate = true;
+  }
+}
+
+export function hideBehindLayersForTri(tri) {
+  if (!tri) return;
+
+  if (tri.dotFaceMeshes?.length) {
+    tri.dotFaceMeshes.forEach((mesh) => setFaceOpacity(mesh.material, 0));
+  }
+  if (tri.dotMesh) tri.dotMesh.visible = false;
+  if (tri.wireFaceMesh) setFaceOpacity(tri.wireFaceMesh.material, 0);
+  if (tri.wireMesh) tri.wireMesh.visible = false;
+  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 0);
+  if (tri.mesh) tri.mesh.visible = false;
+}
+
+export function showBehindLayersForTri(tri) {
+  if (!tri) return;
+
+  if (tri.dotFaceMeshes?.length) {
+    tri.dotFaceMeshes.forEach((mesh) => setFaceOpacity(mesh.material, 1));
+  }
+  if (tri.dotMesh) tri.dotMesh.visible = true;
+  if (tri.wireFaceMesh) setFaceOpacity(tri.wireFaceMesh.material, 1);
+  if (tri.wireMesh) tri.wireMesh.visible = true;
+  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 1);
+  if (tri.mesh) tri.mesh.visible = true;
 }
 
 function createVertexDotMesh() {
   const geometry = new THREE.SphereGeometry(0.5, 10, 10);
   const material = new THREE.MeshBasicMaterial({
-    color: 0xffffff,
+    color: DEFAULT_WIREFRAME_COLOR,
     transparent: true,
     opacity: 0,
     depthTest: true,
@@ -427,7 +460,12 @@ function colorGroupIndex(color) {
 }
 
 export function applyColorMode(triangles, mode, options = {}) {
-  const { overrideColor = '#ff8ee3', palette = PALETTE } = options;
+  const {
+    overrideColor = DEFAULT_CONSTRUCTION_COLOR,
+    palette = PALETTE,
+    wireframeColor = DEFAULT_WIREFRAME_COLOR,
+    solidColor = DEFAULT_SOLID_COLOR,
+  } = options;
 
   triangles.forEach((tri, i) => {
     let color;
@@ -450,18 +488,29 @@ export function applyColorMode(triangles, mode, options = {}) {
     }
 
     tri.faceMesh.material.color.set(color);
-    applyWireframeColor(tri.wireFaceMesh.material);
+    applyWireframeColor(tri.wireFaceMesh.material, wireframeColor);
     applyWireEmissive(
       tri.wireFaceMesh.material,
       tri.wireFaceMesh.material.userData.glow?.emissiveIntensity ?? 0,
     );
+    tri.whiteFaceMesh.material.color.set(solidColor);
+  });
+
+  applyDotColors(triangles, wireframeColor);
+}
+
+function applyDotColors(triangles, color = DEFAULT_WIREFRAME_COLOR) {
+  triangles.forEach((tri) => {
+    tri.dotFaceMeshes?.forEach((mesh) => {
+      mesh.material.color.set(color);
+    });
   });
 }
 
-function applyWireframeColor(material) {
+function applyWireframeColor(material, color = DEFAULT_WIREFRAME_COLOR) {
   if (!material.isLineMaterial) return;
-  material.color.set(WIREFRAME_COLOR);
-  material.userData.baseColor.set(WIREFRAME_COLOR);
+  material.color.set(color);
+  material.userData.baseColor.set(color);
 }
 
 export function applyWireEmissive(material, strength) {
@@ -485,12 +534,27 @@ export function updateWireframeLineResolutions(triangles, width, height) {
   });
 }
 
-export function updateVertexDotSizes(triangles, camera, width, height) {
+export function updateWireframeLineWidths(triangles, lineWidth) {
+  triangles.forEach((tri) => {
+    const material = tri.wireFaceMesh.material;
+    if (material.isLineMaterial) {
+      material.linewidth = lineWidth;
+    }
+  });
+}
+
+export function updateVertexDotSizes(
+  triangles,
+  camera,
+  width,
+  height,
+  pixelSize = DEFAULT_DOT_PIXEL_SIZE,
+) {
   const target = new THREE.Vector3();
   const vFov = (camera.fov * Math.PI) / 180;
   const distance = camera.position.distanceTo(target);
   const visibleHeight = 2 * Math.tan(vFov / 2) * distance;
-  const worldSize = (DOT_PIXEL_SIZE / height) * visibleHeight;
+  const worldSize = (pixelSize / height) * visibleHeight;
 
   triangles.forEach((tri) => {
     tri.dotFaceMeshes?.forEach((mesh) => {
@@ -509,8 +573,9 @@ export function getColoredEmissiveStrength(strength) {
   return strength * COLORED_EMISSIVE_BOOST;
 }
 
-export function applyEmissiveStrength(triangles, strength) {
+export function applyEmissiveStrength(triangles, strength, options = {}) {
   const coloredStrength = getColoredEmissiveStrength(strength);
+  const wireframeColor = options.wireframeColor ?? DEFAULT_WIREFRAME_COLOR;
 
   triangles.forEach((tri) => {
     const material = tri.faceMesh.material;
@@ -518,9 +583,11 @@ export function applyEmissiveStrength(triangles, strength) {
     material.emissive.copy(material.color);
     material.emissiveIntensity = coloredStrength;
 
-    applyWireframeColor(tri.wireFaceMesh.material);
+    applyWireframeColor(tri.wireFaceMesh.material, wireframeColor);
     applyWireEmissive(tri.wireFaceMesh.material, getWireEmissiveStrength(strength));
   });
+
+  applyDotColors(triangles, wireframeColor);
 }
 
 function gradientColor(x, y, palette) {

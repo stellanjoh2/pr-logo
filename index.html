@@ -4,42 +4,364 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Polyrig — Triangle Logo Reveal</title>
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="alternate icon" href="/favicon.ico" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.0.3/400.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.0.3/500.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.0.3/600.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.0.3/700.css"
+    />
     <style>
+      :root {
+        --pr-bg: #111111;
+        --pr-bg-raised: #1c1c1c;
+        --pr-bg-hover: #242424;
+        --pr-text: #e7e7e5;
+        --pr-text-strong: #ffffff;
+        --pr-muted: #a9a9a7;
+        --pr-border: #333333;
+        --pr-border-strong: #444444;
+        --pr-accent: #ff4a1c;
+        --pr-accent-hover: #ff5c35;
+        --pr-accent-active: #e63f15;
+        --pr-panel-width: 420px;
+        --pr-ease: cubic-bezier(0.33, 1, 0.68, 1);
+
+        --tp-base-background-color: var(--pr-bg);
+        --tp-base-shadow-color: transparent;
+        --tp-base-font-family: 'Geist Sans', system-ui, sans-serif;
+        --tp-base-border-radius: 0px;
+        --tp-blade-border-radius: 0px;
+        --tp-blade-horizontal-padding: 9px;
+        --tp-blade-value-width: 230px;
+        --tp-button-background-color: #2a2a2a;
+        --tp-button-background-color-hover: var(--pr-accent);
+        --tp-button-background-color-focus: var(--pr-accent);
+        --tp-button-background-color-active: var(--pr-accent-active);
+        --tp-button-foreground-color: var(--pr-accent);
+        --tp-container-background-color: rgb(231 231 229 / 0.06);
+        --tp-container-background-color-hover: rgb(231 231 229 / 0.1);
+        --tp-container-background-color-focus: rgb(231 231 229 / 0.12);
+        --tp-container-background-color-active: rgb(255 74 28 / 0.18);
+        --tp-container-foreground-color: var(--pr-text);
+        --tp-container-horizontal-padding: 9px;
+        --tp-container-vertical-padding: 9px;
+        --tp-container-unit-spacing: 7px;
+        --tp-container-unit-size: 26px;
+        --tp-input-background-color: var(--pr-bg-raised);
+        --tp-input-background-color-hover: var(--pr-bg-hover);
+        --tp-input-background-color-focus: #2a2a2a;
+        --tp-input-background-color-active: var(--pr-border);
+        --tp-input-foreground-color: var(--pr-text-strong);
+        --tp-label-foreground-color: var(--pr-muted);
+        --tp-monitor-background-color: var(--pr-bg-raised);
+        --tp-monitor-foreground-color: var(--pr-muted);
+        --tp-groove-foreground-color: var(--pr-border);
+      }
+
       * {
         margin: 0;
         padding: 0;
         box-sizing: border-box;
       }
+
       html,
       body {
         width: 100%;
         height: 100%;
         overflow: hidden;
         background: #000;
+        font-family: 'Geist Sans', system-ui, sans-serif;
+        color: var(--pr-text);
       }
+
       canvas {
         display: block;
       }
+
       #file-input {
         display: none;
       }
+
       #record-status {
         position: fixed;
         left: 16px;
         bottom: 16px;
-        padding: 8px 12px;
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.08);
-        color: #fff;
-        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        z-index: 20;
+        padding: 10px 14px;
+        border: 1px solid var(--pr-border);
+        border-radius: 0;
+        background: var(--pr-bg);
+        color: var(--pr-text);
+        font: 500 12px/1.4 'Geist Sans', system-ui, sans-serif;
+        letter-spacing: 0.02em;
         pointer-events: none;
         opacity: 0;
-        transition: opacity 0.2s ease;
+        transition: opacity 0.2s var(--pr-ease);
       }
+
       #record-status.is-visible {
         opacity: 1;
+      }
+
+      .tp-dfwv.polyrig-pane-host {
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: var(--pr-panel-width) !important;
+        max-width: min(var(--pr-panel-width), 100vw);
+        height: 100vh !important;
+        height: 100dvh !important;
+        max-height: none !important;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .polyrig-pane-host > .polyrig-pane-scroll,
+      .polyrig-pane-host > .tp-rotv {
+        flex: 1 1 0;
+        min-height: 0;
+        width: 100%;
+        height: auto !important;
+        max-height: none !important;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: var(--pr-accent) transparent;
+      }
+
+      .polyrig-pane-host > .polyrig-pane-scroll::-webkit-scrollbar,
+      .polyrig-pane-host > .tp-rotv::-webkit-scrollbar {
+        width: 7px;
+      }
+
+      .polyrig-pane-host > .polyrig-pane-scroll::-webkit-scrollbar-thumb,
+      .polyrig-pane-host > .tp-rotv::-webkit-scrollbar-thumb {
+        background: var(--pr-accent);
+      }
+
+      .tp-rotv {
+        display: block;
+        width: 100%;
+        border: 0 !important;
+        box-shadow: none !important;
+        font-size: 13px;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        line-height: 1.25;
+      }
+
+      .tp-rotv_c {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        opacity: 1 !important;
+      }
+
+      .polyrig-pane-brand {
+        flex: 0 0 auto;
+        position: relative;
+        z-index: 2;
+        padding: 22px 5% 18px;
+        border: 0;
+        background: var(--pr-bg);
+      }
+
+      .polyrig-pane-logo-img {
+        display: block;
+        width: 100%;
+        height: auto;
+        pointer-events: none;
+        user-select: none;
+      }
+
+      .polyrig-pane-footer {
+        flex: 0 0 auto;
+        padding: 20px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+        margin-top: 4px;
+        background: var(--pr-bg);
+      }
+
+      .polyrig-pane-hide {
+        display: block;
+        width: 100%;
+        height: 35px;
+        border: 0;
+        border-radius: 0;
+        background: #2a2a2a;
+        color: var(--pr-accent);
+        font: 600 12px/35px 'Geist Sans', system-ui, sans-serif;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition:
+          background-color 0.15s var(--pr-ease),
+          color 0.15s var(--pr-ease),
+          box-shadow 0.2s var(--pr-ease);
+      }
+
+      .polyrig-pane-hide:hover,
+      .polyrig-pane-hide:focus-visible {
+        background: var(--pr-accent);
+        color: #fff;
+        box-shadow:
+          0 0 14px color-mix(in srgb, var(--pr-accent) 45%, transparent),
+          0 0 28px color-mix(in srgb, var(--pr-accent) 22%, transparent);
+        outline: none;
+      }
+
+      .tp-rotv_b {
+        flex: 0 0 auto;
+        text-align: left !important;
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: 0.02em;
+        color: var(--pr-text-strong);
+        background-color: var(--pr-bg) !important;
+        border: 0 !important;
+        height: 44px;
+        line-height: 44px;
+      }
+
+      .tp-rotv_b:hover,
+      .tp-rotv_b:focus,
+      .tp-rotv_b:active {
+        background-color: var(--pr-bg-raised) !important;
+      }
+
+      .tp-fldv_b {
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-size: 12px;
+        color: var(--pr-text) !important;
+        height: calc(var(--tp-container-unit-size) + 6px);
+        line-height: calc(var(--tp-container-unit-size) + 6px);
+      }
+
+      .tp-lblv {
+        min-height: calc(var(--tp-container-unit-size) + 4px);
+        padding-top: 2px;
+        padding-bottom: 2px;
+      }
+
+      .tp-lblv_l {
+        font-size: 13px;
+        letter-spacing: 0.01em;
+      }
+
+      .tp-btnv_b,
+      .tp-lstv_s,
+      .tp-p2dv_b {
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-weight: 600;
+        font-size: 12px;
+        height: 35px;
+        line-height: 35px;
+        color: var(--pr-accent);
+        transition:
+          background-color 0.15s var(--pr-ease),
+          color 0.15s var(--pr-ease),
+          box-shadow 0.2s var(--pr-ease);
+      }
+
+      .tp-btnv_b:hover,
+      .tp-btnv_b:focus,
+      .tp-lstv_s:hover,
+      .tp-lstv_s:focus,
+      .tp-p2dv_b:hover,
+      .tp-p2dv_b:focus {
+        color: #fff !important;
+        box-shadow:
+          0 0 14px color-mix(in srgb, var(--pr-accent) 45%, transparent),
+          0 0 28px color-mix(in srgb, var(--pr-accent) 22%, transparent);
+      }
+
+      .tp-btnv_b:active,
+      .tp-lstv_s:active,
+      .tp-p2dv_b:active {
+        color: #fff !important;
+      }
+
+      .tp-lstv_m {
+        color: inherit;
+      }
+
+      .tp-lstv_s,
+      .tp-txtv_i,
+      .tp-colswv_sw {
+        font-family: inherit;
+        font-size: 13px;
+        letter-spacing: 0.01em;
+      }
+
+      .tp-ckbv_i:checked + .tp-ckbv_w {
+        background-color: var(--pr-accent) !important;
+      }
+
+      .tp-ckbv_i:checked + .tp-ckbv_w svg path {
+        stroke: #fff;
+      }
+
+      .tp-sldv_k::after {
+        background-color: var(--pr-accent) !important;
+        border-radius: 0 !important;
+      }
+
+      .tp-sldv_t:hover .tp-sldv_k::after,
+      .tp-sldv_t:focus .tp-sldv_k::after,
+      .tp-sldv_t:active .tp-sldv_k::after {
+        background-color: var(--pr-accent-hover) !important;
+      }
+
+      .tp-sldv_k::before {
+        background-color: var(--pr-accent) !important;
+      }
+
+      .tp-sprv_r {
+        background-color: transparent !important;
+        height: 0;
+      }
+
+      .tp-fldv_b,
+      .tp-fldv_c,
+      .tp-fldv_i {
+        border: 0 !important;
+        box-shadow: none !important;
+      }
+
+      /* Color pickers: hex text only (no RGB/HSL/HSV mode switch). */
+      .tp-coltxtv_m {
+        display: none !important;
+      }
+
+      .tp-coltxtv_w {
+        width: 100%;
+      }
+
+      .tp-coltxtv_c {
+        width: 100%;
+      }
+
+      @media (max-width: 720px) {
+        :root {
+          --pr-panel-width: min(100vw, 100%);
+          --tp-blade-value-width: 190px;
+        }
       }
     </style>
   </head>
