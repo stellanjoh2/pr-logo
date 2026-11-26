@@ -109,6 +109,7 @@ const DEFAULT_PARAMS = {
   emissiveStrength: 0.4,
   bloom: true,
   cameraMode: 'free',
+  orbitSpeed: 1,
   finalizeHold: 0.5,
   finalizeDuration: 0.9,
 };
@@ -197,6 +198,7 @@ let dissolvePending = false;
 let idleTimeline = null;
 let pane = null;
 let cameraModeBinding = null;
+let orbitSpeedBinding = null;
 let playPauseButton = null;
 let animationPaused = false;
 let uiVisible = true;
@@ -224,6 +226,8 @@ let activeCameraState = 'main';
 const _cameraMotionEnd = new THREE.Vector3();
 
 const ORBIT_REVOLUTION_SEC = 60;
+const ORBIT_ZOOM_MIN = 0.5;
+const ORBIT_ZOOM_MAX = 80;
 const cameraClock = new THREE.Clock();
 let orbitAngle = 0;
 let orbitRadius = DEFAULT_FRONT_CAMERA_DISTANCE;
@@ -242,20 +246,33 @@ function syncOrbitControlsForCameraMode() {
     (params.cameraMode === 'cinematic' && params.orbitControls);
 }
 
-function updateCameraPaneState() {}
+function updateCameraPaneState() {
+  if (orbitSpeedBinding) {
+    orbitSpeedBinding.hidden = params.cameraMode !== 'orbit';
+  }
+}
 
 function resetOrbitCameraState() {
   const target = controls.target;
   const offsetX = camera.position.x - target.x;
   const offsetZ = camera.position.z - target.z;
   orbitAngle = Math.atan2(offsetX, offsetZ);
-  orbitRadius = Math.max(camera.position.distanceTo(target), 0.001);
+  orbitRadius = Math.max(Math.hypot(offsetX, offsetZ), 0.001);
+}
+
+function zoomOrbitCamera(deltaY) {
+  if (!isOrbitCamera()) return;
+  const factor = Math.exp(-deltaY * 0.0015);
+  orbitRadius = THREE.MathUtils.clamp(orbitRadius * factor, ORBIT_ZOOM_MIN, ORBIT_ZOOM_MAX);
 }
 
 function updateOrbitCamera(delta) {
   if (!isOrbitCamera()) return;
 
-  orbitAngle -= (delta * Math.PI * 2) / ORBIT_REVOLUTION_SEC;
+  if (delta) {
+    const speed = Math.max(0, params.orbitSpeed);
+    orbitAngle -= ((delta * Math.PI * 2) / ORBIT_REVOLUTION_SEC) * speed;
+  }
   const target = controls.target;
   camera.position.x = target.x + Math.sin(orbitAngle) * orbitRadius;
   camera.position.z = target.z + Math.cos(orbitAngle) * orbitRadius;
@@ -1707,6 +1724,12 @@ function setupControls() {
     .on('change', () => applyCameraModeChange());
 
   cameraFolder.addButton({ title: 'Free camera' }).on('click', () => switchToFreeCamera());
+  orbitSpeedBinding = cameraFolder.addBinding(params, 'orbitSpeed', {
+    label: 'Orbit speed',
+    min: 0,
+    max: 5,
+    step: 0.05,
+  });
 
   updateCameraPaneState();
 
@@ -1945,6 +1968,17 @@ document.getElementById('file-input').addEventListener('change', (event) => {
 
 window.addEventListener('resize', resizeRenderer);
 
+renderer.domElement.addEventListener(
+  'wheel',
+  (event) => {
+    if (!isOrbitCamera()) return;
+    event.preventDefault();
+    zoomOrbitCamera(event.deltaY);
+    updateOrbitCamera(0);
+  },
+  { passive: false },
+);
+
 window.addEventListener('keydown', (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
     return;
@@ -1973,6 +2007,9 @@ function animate() {
   const delta = Math.min(cameraClock.getDelta(), 0.05);
   if (!animationPaused) {
     updateOrbitCamera(delta);
+  } else if (isOrbitCamera()) {
+    // Keep zoomed radius applied while paused.
+    updateOrbitCamera(0);
   }
   controls.update();
   renderFrame();
