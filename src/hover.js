@@ -44,6 +44,7 @@ const DEFAULT_PARAMS = {
   hoverRadius: 0.08,
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
+  hoverDepth: 1.2,
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
@@ -80,11 +81,11 @@ const BLOOM_THRESHOLD = 0.82;
 const DIGITAL_THRESHOLD = 0.5;
 const VISIBLE_EPSILON = 0.002;
 
-/** Hover-driven layers, keyed to the radius multiplier each one uses. */
+/** Hover-driven layers: white lifts most, then construction, then wire. */
 const HOVER_LAYERS = [
-  { key: 'white', radiusScale: () => 1 },
-  { key: 'colored', radiusScale: () => params.coloredRadiusScale },
-  { key: 'wire', radiusScale: () => params.wireRadiusScale },
+  { key: 'white', radiusScale: () => 1, depthScale: 1 },
+  { key: 'colored', radiusScale: () => params.coloredRadiusScale, depthScale: 0.55 },
+  { key: 'wire', radiusScale: () => params.wireRadiusScale, depthScale: 0.25 },
 ];
 
 const scene = new THREE.Scene();
@@ -178,9 +179,25 @@ function getLayerGroup(key) {
 }
 
 function getLayerParts(tri, key) {
-  if (key === 'white') return { mesh: tri.whiteMesh, material: tri.whiteFaceMesh.material };
-  if (key === 'colored') return { mesh: tri.mesh, material: tri.faceMesh.material };
-  return { mesh: tri.wireMesh, material: tri.wireFaceMesh.material };
+  if (key === 'white') {
+    return {
+      mesh: tri.whiteMesh,
+      material: tri.whiteFaceMesh.material,
+      home: tri.whiteHomePosition,
+    };
+  }
+  if (key === 'colored') {
+    return {
+      mesh: tri.mesh,
+      material: tri.faceMesh.material,
+      home: tri.homePosition,
+    };
+  }
+  return {
+    mesh: tri.wireMesh,
+    material: tri.wireFaceMesh.material,
+    home: tri.wireHomePosition,
+  };
 }
 
 function clearLogo() {
@@ -223,7 +240,7 @@ function frameCameraToLogo() {
   const aspect = Math.max(camera.aspect, 0.001);
   const widthDistance = logoSize.x / (LOGO_HORIZONTAL_FILL * 2 * tanHalfFov * aspect);
   const heightDistance = logoSize.y / (LOGO_VERTICAL_FILL * 2 * tanHalfFov);
-  // Fit the front-most (solid) plane so lit-up layers never spill past the screen edge.
+  // Fit the resting solid plane; the hover bulge is allowed to swell past this.
   const frontZ = Math.max(0, params.logoDepth) * 2;
 
   camera.position.set(0, 0, frontZ + Math.max(widthDistance, heightDistance));
@@ -286,8 +303,8 @@ function resetHoverState() {
   triangles.forEach((tri) => {
     tri.hover = { white: 0, colored: 0, wire: 0 };
     tri.hoverShown = { white: -1, colored: -1, wire: -1 };
-    for (const { key } of HOVER_LAYERS) {
-      applyHoverIntensity(tri, key, 0);
+    for (const { key, depthScale } of HOVER_LAYERS) {
+      applyHoverIntensity(tri, key, 0, depthScale);
     }
   });
 }
@@ -336,14 +353,17 @@ function easeToward(current, target, dt) {
   return Math.abs(next - target) < 0.0005 ? target : next;
 }
 
-function applyHoverIntensity(tri, key, value) {
-  const shown = params.hoverStyle === 'digital' ? (value >= DIGITAL_THRESHOLD ? 1 : 0) : value;
-  if (tri.hoverShown[key] === shown) return;
-  tri.hoverShown[key] = shown;
+function applyHoverIntensity(tri, key, value, depthScale = 1) {
+  const { mesh, material, home } = getLayerParts(tri, key);
+  // Brightness and Z share the same eased value so pieces settle back as they dim.
+  const lift = value * params.hoverDepth * depthScale;
+  mesh.position.z = home.z + lift;
 
-  const { mesh, material } = getLayerParts(tri, key);
-  mesh.visible = shown > VISIBLE_EPSILON;
-  setFaceOpacity(material, shown);
+  if (tri.hoverShown[key] === value) return;
+  tri.hoverShown[key] = value;
+
+  mesh.visible = value > VISIBLE_EPSILON || Math.abs(lift) > VISIBLE_EPSILON;
+  setFaceOpacity(material, value);
 }
 
 function updatePointerHits() {
@@ -369,7 +389,7 @@ function updateHover(dt) {
   const holderScale = logoHolder.scale.x;
 
   for (const tri of triangles) {
-    for (const { key, radiusScale } of HOVER_LAYERS) {
+    for (const { key, radiusScale, depthScale } of HOVER_LAYERS) {
       let target = 0;
       if (layerHitValid[key]) {
         const hit = layerHits[key];
@@ -379,8 +399,12 @@ function updateHover(dt) {
         );
         target = hoverFalloff(distance, baseRadius * radiusScale() * holderScale);
       }
+      // Digital snaps the target; easing still carries brightness + Z back into place.
+      if (params.hoverStyle === 'digital') {
+        target = target >= DIGITAL_THRESHOLD ? 1 : 0;
+      }
       tri.hover[key] = easeToward(tri.hover[key], target, dt);
-      applyHoverIntensity(tri, key, tri.hover[key]);
+      applyHoverIntensity(tri, key, tri.hover[key], depthScale);
     }
   }
 }
@@ -640,6 +664,12 @@ function setupControls() {
     min: 1,
     max: 8,
     step: 0.05,
+  });
+  hoverFolder.addBinding(params, 'hoverDepth', {
+    label: 'Hover depth',
+    min: 0,
+    max: 3,
+    step: 0.01,
   });
   hoverFolder.addBinding(params, 'hoverSoftness', {
     label: 'Softness',
