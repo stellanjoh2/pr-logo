@@ -56,6 +56,8 @@ import {
   downloadBlob,
   getRecordingDownloadName,
   RECORD_FPS,
+  RECORD_HEIGHT,
+  CanvasProResRecorder,
 } from './recorder.js';
 import {
   AberrationShader,
@@ -71,6 +73,10 @@ const DEFAULT_SVG = defaultSvg;
 
 const EASINGS = {
   easeOutBack: 'back.out(1.4)',
+  easeOutSine: 'sine.out',
+  easeOutCubic: 'power2.out',
+  easeOutQuart: 'power3.out',
+  easeOutQuint: 'power4.out',
   easeOutExpo: 'expo.out',
   easeInOutSine: 'sine.inOut',
   easeInOutQuad: 'power1.inOut',
@@ -86,16 +92,17 @@ const EASINGS = {
 const DEFAULT_PARAMS = {
   pattern: 'digital-blink',
   staggerOrder: 'left-to-right',
-  duration: 2,
+  duration: 1.2,
   staggerSpread: 0.4,
   easing: 'linear',
   loop: true,
-  holdTime: 10,
+  holdTime: 5.6,
   idle: false,
   idleIntensity: 0.35,
   colorMode: 'override',
   overrideColor: DEFAULT_CONSTRUCTION_COLOR,
   wireframeColor: DEFAULT_WIREFRAME_COLOR,
+  dotColor: '#fff865',
   constructionColor: DEFAULT_CONSTRUCTION_COLOR,
   solidColor: DEFAULT_SOLID_COLOR,
   wireframeLineWidth: DEFAULT_WIREFRAME_LINE_WIDTH,
@@ -106,7 +113,7 @@ const DEFAULT_PARAMS = {
   layerColored: true,
   layerWhite: true,
   layerTravel: 6,
-  layerLandingTime: 0.85,
+  layerLandingTime: 0.9,
   orbitControls: true,
   background: '#000000',
   emissiveStrength: 0.4,
@@ -114,6 +121,11 @@ const DEFAULT_PARAMS = {
   bloomIntensity: 0.65,
   fxaa: true,
   cameraMode: 'cinematic',
+  cinematicRotateAngle: 45,
+  cinematicDistance: 1,
+  cinematicZoomOut: 0.2,
+  cinematicRevealDelay: 1,
+  cameraEasing: 'easeOutExpo',
   orbitSpeed: 1,
   finalizeHold: 0.5,
   finalizeDuration: 0.9,
@@ -127,8 +139,6 @@ const params = {
 };
 
 const DEFAULT_FRONT_CAMERA_DISTANCE = 9.115;
-const CINEMATIC_CAMERA_ZOOM_IN_RATIO = 0.2;
-
 const MAIN_CAMERA = {
   position: [0, 0, DEFAULT_FRONT_CAMERA_DISTANCE],
   target: [0, 0, 0],
@@ -203,6 +213,7 @@ let logoLayers = {
   whiteLayer: null,
 };
 let revealTimeline = null;
+let revealDelayCall = null;
 let earlierLayerTimelines = [];
 let whiteRevealTimeline = null;
 let whiteRevealStarted = false;
@@ -212,6 +223,11 @@ let idleTimeline = null;
 let pane = null;
 let cameraModeBinding = null;
 let orbitSpeedBinding = null;
+let rotateAngleBinding = null;
+let cinematicDistanceBinding = null;
+let cinematicZoomOutBinding = null;
+let cinematicRevealDelayBinding = null;
+let cameraEasingBinding = null;
 let playPauseButton = null;
 let animationPaused = false;
 let uiVisible = false;
@@ -225,12 +241,21 @@ let coloredRevealStarted = false;
 let activeRecorder = null;
 let recordState = null;
 let recordTickListener = null;
+let steppedRecording = false;
+let recordRenderRestore = null;
+let lineWidthScale = 1;
+const RECORD_END_PADDING_SEC = 0.5;
 const LAYER_START_RATIO = 1 / 3;
 const HOLD_FADE_RATIO = 0.5;
 const FIRST_LETTER_INDEX = 0;
 const LOGO_SCALE_END = 0.7;
-const CAMERA_MOTION_EASE = 'expo.out';
+const BLOOM_FADE_EASE = 'expo.out';
+
+function getCameraEase() {
+  return EASINGS[params.cameraEasing] ?? EASINGS.easeOutExpo;
+}
 const LAYER_LANDING_EASE = 'power3.out';
+const LAYER_LIFT_EASE = 'power3.in';
 const recordStatusEl = document.getElementById('record-status');
 
 const defaultCameraPosition = camera.position.clone();
@@ -238,6 +263,7 @@ const defaultCameraPosition = camera.position.clone();
 let cameraMotionTimeline = null;
 let activeCameraState = 'main';
 const _cameraMotionEnd = new THREE.Vector3();
+const _cameraRotateAxisY = new THREE.Vector3(0, 1, 0);
 
 const ORBIT_REVOLUTION_SEC = 60;
 const ORBIT_ZOOM_MIN = 0.5;
@@ -247,7 +273,7 @@ let orbitAngle = 0;
 let orbitRadius = DEFAULT_FRONT_CAMERA_DISTANCE;
 
 function isCinematicCamera() {
-  return params.cameraMode === 'cinematic';
+  return params.cameraMode === 'cinematic' || params.cameraMode === 'cinematic-rotate';
 }
 
 function isOrbitCamera() {
@@ -257,13 +283,46 @@ function isOrbitCamera() {
 function syncOrbitControlsForCameraMode() {
   controls.enabled =
     params.cameraMode === 'free' ||
-    (params.cameraMode === 'cinematic' && params.orbitControls);
+    (isCinematicCamera() && params.orbitControls);
+  // Cinematic modes handle the wheel via cinematicDistance so it survives the camera motion.
+  controls.enableZoom = !isCinematicCamera();
+}
+
+const CINEMATIC_DISTANCE_MIN = 0.3;
+const CINEMATIC_DISTANCE_MAX = 3;
+
+let appliedCinematicDistance = 1;
+
+function setCinematicDistance(value) {
+  const next = THREE.MathUtils.clamp(value, CINEMATIC_DISTANCE_MIN, CINEMATIC_DISTANCE_MAX);
+  params.cinematicDistance = next;
+  // While the motion runs it re-applies the distance every frame; afterwards, scale in place.
+  if (!cameraMotionTimeline && isCinematicCamera() && appliedCinematicDistance > 0) {
+    const offset = camera.position.clone().sub(controls.target);
+    camera.position
+      .copy(controls.target)
+      .add(offset.multiplyScalar(next / appliedCinematicDistance));
+    controls.update();
+  }
+  appliedCinematicDistance = next;
+}
+
+function zoomCinematicCamera(deltaY) {
+  if (!isCinematicCamera()) return;
+  setCinematicDistance(params.cinematicDistance * Math.exp(deltaY * 0.0015));
+  cinematicDistanceBinding?.refresh();
 }
 
 function updateCameraPaneState() {
   if (orbitSpeedBinding) {
     orbitSpeedBinding.hidden = params.cameraMode !== 'orbit';
   }
+  if (cinematicDistanceBinding) cinematicDistanceBinding.hidden = !isCinematicCamera();
+  if (cinematicZoomOutBinding) cinematicZoomOutBinding.hidden = !isCinematicCamera();
+  if (cinematicRevealDelayBinding) cinematicRevealDelayBinding.hidden = !isCinematicCamera();
+  if (cameraEasingBinding) cameraEasingBinding.hidden = !isCinematicCamera();
+  const isRotate = params.cameraMode === 'cinematic-rotate';
+  if (rotateAngleBinding) rotateAngleBinding.hidden = !isRotate;
 }
 
 function resetOrbitCameraState() {
@@ -360,36 +419,52 @@ function startCinematicCameraMotion() {
   applyCameraState(MAIN_CAMERA, 'main');
 
   const target = controls.target.clone();
+  const startPos = camera.position.clone();
   const endPos = _cameraMotionEnd.set(
     MAIN_CAMERA.position[0],
     MAIN_CAMERA.position[1],
-    MAIN_CAMERA.position[2] * (1 - CINEMATIC_CAMERA_ZOOM_IN_RATIO),
+    MAIN_CAMERA.position[2] * (1 + params.cinematicZoomOut),
   );
-  const duration = Math.max(0.001, computeFullAnimationDuration());
+  // Finish before the dissolve so only the parts move on the way out.
+  const duration = Math.max(0.001, computeFullAnimationDuration({ includeDissolve: false }));
+  const rotates = params.cameraMode === 'cinematic-rotate';
+  const startYaw = rotates ? THREE.MathUtils.degToRad(params.cinematicRotateAngle) : 0;
+  const offset = new THREE.Vector3();
+
+  const applyMotion = (progress) => {
+    offset.lerpVectors(startPos, endPos, progress).sub(target);
+    offset.multiplyScalar(params.cinematicDistance);
+    appliedCinematicDistance = params.cinematicDistance;
+    if (rotates) {
+      const yaw = startYaw * (1 - progress);
+      offset.applyAxisAngle(_cameraRotateAxisY, yaw);
+      // Counter the side-on foreshortening so on-screen size shrinks like Cinematic Zoom.
+      const scale = THREE.MathUtils.lerp(1, LOGO_SCALE_END, progress);
+      logoHolder.scale.setScalar(scale / Math.max(Math.cos(yaw), 0.25));
+    }
+    camera.position.copy(target).add(offset);
+    camera.lookAt(target);
+    controls.update();
+  };
 
   activeCameraState = 'main';
+  applyMotion(0);
 
+  const motion = { progress: 0 };
   cameraMotionTimeline = gsap.timeline({
     onComplete: () => {
-      camera.position.copy(endPos);
-      camera.lookAt(target);
-      controls.update();
+      applyMotion(1);
       cameraMotionTimeline = null;
     },
   });
 
   cameraMotionTimeline.to(
-    camera.position,
+    motion,
     {
-      x: endPos.x,
-      y: endPos.y,
-      z: endPos.z,
+      progress: 1,
       duration,
-      ease: CAMERA_MOTION_EASE,
-      onUpdate: () => {
-        camera.lookAt(target);
-        controls.update();
-      },
+      ease: getCameraEase(),
+      onUpdate: () => applyMotion(motion.progress),
     },
     0,
   );
@@ -400,7 +475,7 @@ function startCinematicCameraMotion() {
       {
         fov: MAIN_CAMERA.fov,
         duration,
-        ease: CAMERA_MOTION_EASE,
+        ease: getCameraEase(),
         onUpdate: () => camera.updateProjectionMatrix(),
       },
       0,
@@ -569,6 +644,7 @@ function getLayerColorOptions() {
     overrideColor: params.constructionColor,
     wireframeColor: params.wireframeColor,
     solidColor: params.solidColor,
+    dotColor: params.dotColor,
   };
 }
 
@@ -587,10 +663,8 @@ function applyLayerVisibility() {
 function applyCurrentLayerAppearance() {
   if (triangles.length === 0) return;
   applyColorMode(triangles, params.colorMode, getLayerColorOptions());
-  applyEmissiveStrength(triangles, params.emissiveStrength, {
-    wireframeColor: params.wireframeColor,
-  });
-  updateWireframeLineWidths(triangles, params.wireframeLineWidth);
+  applyEmissiveStrength(triangles, params.emissiveStrength, getLayerColorOptions());
+  applyWireframeLineWidths();
   refreshVertexDotSizes();
   applyLogoDepth();
   applyLayerVisibility();
@@ -657,6 +731,8 @@ function loadSvg(svgText) {
 }
 
 function stopRevealAnimations() {
+  revealDelayCall?.kill();
+  revealDelayCall = null;
   revealTimeline?.kill();
   revealTimeline = null;
   earlierLayerTimelines.forEach((tl) => tl.kill());
@@ -824,10 +900,10 @@ function computeDissolveDuration() {
     maxEnd = Math.max(maxEnd, dotsStart + start.delay);
   }
 
-  return maxEnd;
+  return maxEnd + (hasLayerLanding() ? params.layerLandingTime : 0);
 }
 
-function computeFullAnimationDuration() {
+function computeFullAnimationDuration({ includeDissolve = true } = {}) {
   if (triangles.length === 0) return 0;
 
   const { whiteStartOffset, whiteLetterPEndTime, whiteRevealEndTime, holdFadeDuration } =
@@ -835,11 +911,17 @@ function computeFullAnimationDuration() {
   const emissiveFadeEnd = whiteStartOffset + whiteLetterPEndTime + holdFadeDuration;
   const whiteRevealEnd = whiteStartOffset + whiteRevealEndTime;
 
-  if (params.loop) {
-    return Math.max(emissiveFadeEnd, whiteRevealEnd) + computeDissolveDuration();
+  const revealDelay = getRevealStartDelay();
+
+  if (params.loop && includeDissolve) {
+    return revealDelay + Math.max(emissiveFadeEnd, whiteRevealEnd) + computeDissolveDuration();
   }
 
-  return Math.max(emissiveFadeEnd, whiteRevealEnd);
+  return revealDelay + Math.max(emissiveFadeEnd, whiteRevealEnd);
+}
+
+function getRevealStartDelay() {
+  return isCinematicCamera() ? Math.max(0, params.cinematicRevealDelay) : 0;
 }
 
 function computeFullIntroDuration() {
@@ -869,10 +951,11 @@ function resetBloomFade() {
 
 function getBloomFadeStartTime() {
   const { whiteStartOffset, whiteLetterPEndTime, whiteRevealEndTime } = computeLayerTiming();
+  const revealDelay = getRevealStartDelay();
   if (hasLetterTriangles(FIRST_LETTER_INDEX)) {
-    return whiteStartOffset + whiteLetterPEndTime;
+    return revealDelay + whiteStartOffset + whiteLetterPEndTime;
   }
-  return whiteStartOffset + whiteRevealEndTime;
+  return revealDelay + whiteStartOffset + whiteRevealEndTime;
 }
 
 function startBloomFade() {
@@ -891,7 +974,7 @@ function startBloomFade() {
   bloomFadeTimeline.to(bloom, {
     factor: 0,
     duration: fadeDuration,
-    ease: 'sine.inOut',
+    ease: BLOOM_FADE_EASE,
     onUpdate: () => {
       bloomPass.strength = params.bloomIntensity * bloom.factor;
       bloomPass.threshold = BLOOM_THRESHOLD * bloom.factor;
@@ -910,10 +993,12 @@ function startLogoScaleOut() {
     resetLogoScale();
     return;
   }
+  // Cinematic Rotate drives the logo scale from its camera motion.
+  if (params.cameraMode === 'cinematic-rotate') return;
 
   resetLogoScale();
 
-  const fullDuration = computeFullAnimationDuration();
+  const fullDuration = computeFullAnimationDuration({ includeDissolve: false });
   if (fullDuration <= 0) return;
 
   logoScaleTimeline = gsap.to(logoHolder.scale, {
@@ -921,7 +1006,7 @@ function startLogoScaleOut() {
     y: LOGO_SCALE_END,
     z: LOGO_SCALE_END,
     duration: fullDuration,
-    ease: CAMERA_MOTION_EASE,
+    ease: getCameraEase(),
   });
 }
 
@@ -1077,11 +1162,17 @@ function finishWhiteReveal() {
 }
 
 function prepareDissolveAllLayers() {
+  const coloredEmissive = getColoredEmissiveStrength(params.emissiveStrength);
   triangles.forEach((tri) => {
-    // White exits first; wire + dots reappear staggered. Orange stays hidden.
+    // White exits first; orange, wire + dots reappear under it, then exit staggered.
     prepareDissolveLayer('white', tri);
     tri.mesh.visible = false;
+    tri.mesh.position.copy(tri.homePosition);
+    tri.mesh.scale.copy(tri.homeScale);
     setFaceOpacity(tri.faceMesh.material, 0);
+    // Restore the intro glow that the hold fade removed.
+    tri.faceMesh.material.emissive.copy(tri.faceMesh.material.color);
+    tri.faceMesh.material.emissiveIntensity = coloredEmissive;
 
     tri.wireMesh.position.copy(tri.wireHomePosition);
     tri.wireMesh.scale.copy(tri.homeScale);
@@ -1248,6 +1339,7 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
       materials: [tri.whiteFaceMesh.material],
       meshes: [tri.whiteMesh],
       sourceTri: tri,
+      revealColored: true,
     }));
     const coloredTargets = triangles.map((tri) => ({
       delay: startStates.get(tri).delay,
@@ -1265,10 +1357,44 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
       meshes: [tri.wireMesh],
     }));
 
-    buildDissolveBlinkTweens(tl, whiteTargets, dissolveOpts);
-    buildDissolveBlinkTweens(tl, coloredTargets, { ...dissolveOpts, startOffset: coloredStart });
-    buildDissolveBlinkTweens(tl, wireTargets, { ...dissolveOpts, startOffset: wireStart });
-    buildDotDissolveTweens(tl, dotsTargets, { ...dissolveOpts, startOffset: dotsStart });
+    // Mirror of the intro landing: each part lifts toward the camera from its exit cue
+    // and blinks out as the lift ends.
+    const lifts = hasLayerLanding();
+    const liftTime = lifts ? params.layerLandingTime : 0;
+    const blinkShift = Math.max(0, liftTime - getDigitalBlinkDuration());
+    const addLifts = (targets, layerName, startOffset) => {
+      if (!lifts) return;
+      targets.forEach(({ delay }, i) => {
+        const animTri = getAnimTriangle(triangles[i], layerName);
+        const homeZ = animTri.homePosition.z;
+        tl.fromTo(
+          animTri.mesh.position,
+          { z: homeZ },
+          {
+            z: homeZ + params.layerTravel,
+            duration: liftTime,
+            ease: LAYER_LIFT_EASE,
+            immediateRender: false,
+          },
+          startOffset + delay,
+        );
+      });
+    };
+
+    buildDissolveBlinkTweens(tl, whiteTargets, { ...dissolveOpts, startOffset: blinkShift });
+    buildDissolveBlinkTweens(tl, coloredTargets, {
+      ...dissolveOpts,
+      startOffset: coloredStart + blinkShift,
+    });
+    buildDissolveBlinkTweens(tl, wireTargets, {
+      ...dissolveOpts,
+      startOffset: wireStart + blinkShift,
+    });
+    buildDotDissolveTweens(tl, dotsTargets, { ...dissolveOpts, startOffset: dotsStart + liftTime });
+    addLifts(whiteTargets, 'white', 0);
+    addLifts(coloredTargets, 'colored', coloredStart);
+    addLifts(wireTargets, 'wireframe', wireStart);
+    addLifts(dotsTargets, 'dots', dotsStart);
   } else if (useBlinkTweens) {
     for (const buildLayer of buildLayers) {
       const blinkTargets = triangles.map((tri) => ({
@@ -1378,6 +1504,11 @@ function syncPlayPauseButton() {
 
 function setAnimationPaused(paused) {
   animationPaused = !!paused;
+  // The stepped recorder owns the global timeline; un-pausing it would mix in real time.
+  if (steppedRecording) {
+    syncPlayPauseButton();
+    return;
+  }
   if (animationPaused) {
     gsap.globalTimeline.pause();
   } else {
@@ -1400,7 +1531,7 @@ function playReveal() {
   resetFinalState();
   hideColoredLayer(triangles);
 
-  if (params.cameraMode === 'cinematic') {
+  if (isCinematicCamera()) {
     startCameraSequence();
   }
 
@@ -1413,7 +1544,15 @@ function playReveal() {
   }
 
   revealPhase = 'dots';
-  buildRevealTimeline({ reverse: false, layer: 'dots' });
+  const revealDelay = getRevealStartDelay();
+  if (revealDelay > 0) {
+    revealDelayCall = gsap.delayedCall(revealDelay, () => {
+      revealDelayCall = null;
+      buildRevealTimeline({ reverse: false, layer: 'dots' });
+    });
+  } else {
+    buildRevealTimeline({ reverse: false, layer: 'dots' });
+  }
   startLogoScaleOut();
   startBloomFade();
 }
@@ -1492,6 +1631,16 @@ function beginRecordingClock() {
 }
 
 function endRecordingClock() {
+  if (steppedRecording) {
+    steppedRecording = false;
+    gsap.globalTimeline.resume();
+  }
+  if (recordRenderRestore) {
+    const { pixelRatio } = recordRenderRestore;
+    recordRenderRestore = null;
+    renderer.setPixelRatio(pixelRatio);
+    resizeRenderer();
+  }
   if (recordTickListener) {
     gsap.ticker.remove(recordTickListener);
     recordTickListener = null;
@@ -1500,11 +1649,54 @@ function endRecordingClock() {
   gsap.ticker.fps(0);
 }
 
+async function runSteppedRecording() {
+  const dt = 1 / RECORD_FPS;
+  let time = gsap.globalTimeline.time();
+  let frame = 0;
+
+  try {
+    while (steppedRecording && recordState && activeRecorder?.active) {
+      updateOrbitCamera(frame === 0 ? 0 : dt);
+      controls.update();
+      renderFrame();
+      await activeRecorder.captureFrame();
+      frame += 1;
+      if (frame % 10 === 0 && recordState) {
+        const loopLabel = `loop ${recordState.completed + 1}/${recordState.loops}`;
+        setRecordStatus(`Rendering ProRes 4444… ${loopLabel}, frame ${frame}`, true);
+      }
+
+      time += dt;
+      gsap.globalTimeline.time(time);
+    }
+  } catch (error) {
+    console.error('ProRes recording failed:', error);
+    if (recordState) {
+      recordState = null;
+      activeRecorder.active = false;
+      endRecordingClock();
+      activeRecorder = null;
+      setUiVisible(uiVisible);
+      setRecordStatus('Recording failed', true);
+      window.setTimeout(() => setRecordStatus('', false), 2500);
+      if (params.loop) playReveal();
+    }
+  }
+}
+
 function finishRecordingSession() {
   const loops = recordState?.loops ?? 1;
   const format = recordState?.format ?? 'mp4';
+  const height = recordState?.height;
   recordState = null;
-  setRecordStatus(format === 'png' ? 'Packaging PNG sequence…' : 'Encoding video…', true);
+  setRecordStatus(
+    format === 'png'
+      ? 'Packaging PNG sequence…'
+      : format === 'mov'
+        ? 'Finalizing ProRes 4444…'
+        : 'Encoding video…',
+    true,
+  );
 
   Promise.resolve(activeRecorder?.stop())
     .then((blob) => {
@@ -1514,8 +1706,8 @@ function finishRecordingSession() {
 
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       let filename;
-      if (format === 'png') {
-        filename = getRecordingDownloadName(loops, 'png', stamp);
+      if (format === 'png' || format === 'mov') {
+        filename = getRecordingDownloadName(loops, format, stamp, height);
       } else if (blob.type.includes('mp4')) {
         filename = getRecordingDownloadName(loops, 'mp4', stamp);
       } else {
@@ -1541,8 +1733,9 @@ function finishRecordingSession() {
     });
 }
 
-async function startRecording(loops, format = 'mp4') {
+async function startRecording(loops, format = 'mp4', { height = RECORD_HEIGHT } = {}) {
   if (activeRecorder || recordState || triangles.length === 0) return;
+  const width = Math.round((height * 16) / 9);
 
   stopAnimations();
   resetFinalState();
@@ -1551,7 +1744,12 @@ async function startRecording(loops, format = 'mp4') {
   let formatLabel = 'MP4';
 
   try {
-    if (format === 'png') {
+    if (format === 'mov') {
+      setRecordStatus('Loading ProRes encoder…', true);
+      recorder = new CanvasProResRecorder(renderer.domElement, { fps: RECORD_FPS, width, height });
+      await recorder.start();
+      formatLabel = `${recorder.profileLabel} ${height}p`;
+    } else if (format === 'png') {
       recorder = new CanvasPngSequenceRecorder(renderer.domElement);
       recorder.start();
       formatLabel = 'PNG ZIP';
@@ -1575,11 +1773,23 @@ async function startRecording(loops, format = 'mp4') {
   }
 
   activeRecorder = recorder;
-  recordState = { loops, completed: 0, format };
+  recordState = { loops, completed: 0, format, height };
   setAnimationPaused(false);
-  beginRecordingClock();
   setUiVisible(false);
   setRecordStatus(`Recording ${loops} loop${loops > 1 ? 's' : ''} (${formatLabel})…`, true);
+
+  if (format === 'mov') {
+    recordRenderRestore = { pixelRatio: renderer.getPixelRatio() };
+    renderer.setPixelRatio(1);
+    applyRenderSize(width, height, false);
+    steppedRecording = true;
+    gsap.globalTimeline.pause();
+    playReveal();
+    runSteppedRecording();
+    return;
+  }
+
+  beginRecordingClock();
   playReveal();
   captureRecordingBootstrapFrame();
 }
@@ -1590,7 +1800,10 @@ function handleRecordedLoopComplete() {
   recordState.completed += 1;
 
   if (recordState.completed >= recordState.loops) {
-    finishRecordingSession();
+    // Keep capturing the cleared scene briefly so the last frames are empty and the file loops cleanly.
+    gsap.delayedCall(RECORD_END_PADDING_SEC, () => {
+      if (recordState) finishRecordingSession();
+    });
     return;
   }
 
@@ -1665,7 +1878,7 @@ function collectSettingsSnapshot() {
       mode: params.cameraMode,
       active: activeCameraState,
       main: MAIN_CAMERA,
-      zoomInRatio: CINEMATIC_CAMERA_ZOOM_IN_RATIO,
+      zoomOutRatio: params.cinematicZoomOut,
     },
     logo: {
       scale: roundValue(logoHolder.scale.x, 4),
@@ -1747,10 +1960,18 @@ function applyRenderSize(width, height, updateStyle = true) {
     1 / Math.max(height, 1),
   );
   updateWireframeLineResolutions(triangles, width, height);
+  // Line width is in render pixels; scale it so offscreen exports keep the on-screen proportions.
+  lineWidthScale = height / Math.max(window.innerHeight, 1);
+  applyWireframeLineWidths();
   refreshVertexDotSizes();
 }
 
+function applyWireframeLineWidths() {
+  updateWireframeLineWidths(triangles, params.wireframeLineWidth * lineWidthScale);
+}
+
 function resizeRenderer() {
+  if (recordRenderRestore) return;
   applyRenderSize(window.innerWidth, window.innerHeight, true);
 }
 
@@ -1820,7 +2041,8 @@ function setupControls() {
       options: {
         'Free (review)': 'free',
         Orbit: 'orbit',
-        Cinematic: 'cinematic',
+        'Cinematic Zoom': 'cinematic',
+        'Cinematic Rotate': 'cinematic-rotate',
       },
     })
     .on('change', () => applyCameraModeChange());
@@ -1832,15 +2054,56 @@ function setupControls() {
     max: 5,
     step: 0.05,
   });
-
+  cinematicDistanceBinding = cameraFolder
+    .addBinding(params, 'cinematicDistance', {
+      label: 'Distance',
+      min: CINEMATIC_DISTANCE_MIN,
+      max: CINEMATIC_DISTANCE_MAX,
+      step: 0.01,
+    })
+    .on('change', (ev) => setCinematicDistance(ev.value));
+  cinematicZoomOutBinding = cameraFolder
+    .addBinding(params, 'cinematicZoomOut', {
+      label: 'Zoom amount',
+      min: 0,
+      max: 2,
+      step: 0.01,
+    })
+    .on('change', () => playReveal());
+  cinematicRevealDelayBinding = cameraFolder
+    .addBinding(params, 'cinematicRevealDelay', {
+      label: 'Reveal delay',
+      min: 0,
+      max: 5,
+      step: 0.05,
+    })
+    .on('change', () => playReveal());
+  rotateAngleBinding = cameraFolder
+    .addBinding(params, 'cinematicRotateAngle', {
+      label: 'Rotate angle',
+      min: -90,
+      max: 90,
+      step: 1,
+    })
+    .on('change', () => playReveal());
+  cameraEasingBinding = cameraFolder
+    .addBinding(params, 'cameraEasing', { label: 'Camera easing', options: easingOptions() })
+    .on('change', () => playReveal());
+  cameraFolder
+    .addBinding(params, 'orbitControls', { label: 'Orbit controls' })
+    .on('change', () => {
+      syncOrbitControlsForCameraMode();
+    });
   updateCameraPaneState();
 
-  pane
-    .addBinding(params, 'pattern', { options: patternOptions() })
+  const logoFolder = pane.addFolder({ title: 'Logo', expanded: true });
+  logoFolder
+    .addBinding(params, 'pattern', { label: 'Pattern', options: patternOptions() })
     .on('change', () => playReveal());
 
-  pane
+  logoFolder
     .addBinding(params, 'staggerOrder', {
+      label: 'Stagger order',
       options: {
         'Distance from center': 'distance-from-center',
         'Left to right': 'left-to-right',
@@ -1852,16 +2115,27 @@ function setupControls() {
     })
     .on('change', () => playReveal());
 
-  pane.addBinding(params, 'duration', { min: 0.3, max: 6, step: 0.1 });
-  pane.addBinding(params, 'staggerSpread', { min: 0, max: 1, step: 0.05 });
-  pane
-    .addBinding(params, 'easing', { label: 'Reveal easing', options: easingOptions() })
+  logoFolder.addBinding(params, 'duration', { label: 'Duration', min: 0.3, max: 6, step: 0.1 });
+  logoFolder.addBinding(params, 'staggerSpread', {
+    label: 'Stagger spread',
+    min: 0,
+    max: 1,
+    step: 0.05,
+  });
+  logoFolder
+    .addBinding(params, 'easing', { label: 'Logo easing', options: easingOptions() })
     .on('change', () => playReveal());
 
-  pane.addBinding(params, 'loop');
-  pane.addBinding(params, 'holdTime', { min: 0, max: 10, step: 0.1 });
-  pane
-    .addBinding(params, 'idle')
+  logoFolder.addBinding(params, 'loop', { label: 'Loop' });
+  logoFolder.addBinding(params, 'holdTime', { label: 'Hold time', min: 0, max: 10, step: 0.1 });
+  logoFolder.addBinding(params, 'finalizeHold', {
+    label: 'Finalize hold',
+    min: 0,
+    max: 3,
+    step: 0.1,
+  });
+  logoFolder
+    .addBinding(params, 'idle', { label: 'Idle' })
     .on('change', (ev) => {
       if (ev.value) {
         startIdleAnimation();
@@ -1871,8 +2145,8 @@ function setupControls() {
         triangles.forEach(resetToHome);
       }
     });
-  pane
-    .addBinding(params, 'idleIntensity', { min: 0, max: 1, step: 0.05 })
+  logoFolder
+    .addBinding(params, 'idleIntensity', { label: 'Idle intensity', min: 0, max: 1, step: 0.05 })
     .on('change', () => {
       if (params.idle) startIdleAnimation();
     });
@@ -1914,6 +2188,9 @@ function setupControls() {
     .addBinding(params, 'wireframeColor', { label: 'Wireframe', ...COLOR_BINDING_OPTS })
     .on('change', () => applyCurrentLayerAppearance());
   layersFolder
+    .addBinding(params, 'dotColor', { label: 'Dots', ...COLOR_BINDING_OPTS })
+    .on('change', () => applyCurrentLayerAppearance());
+  layersFolder
     .addBinding(params, 'constructionColor', {
       label: 'Construction',
       ...COLOR_BINDING_OPTS,
@@ -1936,7 +2213,7 @@ function setupControls() {
       max: 8,
       step: 0.1,
     })
-    .on('change', () => updateWireframeLineWidths(triangles, params.wireframeLineWidth));
+    .on('change', () => applyWireframeLineWidths());
   layersFolder
     .addBinding(params, 'dotPixelSize', {
       label: 'Dot size',
@@ -1946,8 +2223,10 @@ function setupControls() {
     })
     .on('change', () => refreshVertexDotSizes());
 
-  pane
+  const lookFolder = pane.addFolder({ title: 'Look', expanded: true });
+  lookFolder
     .addBinding(params, 'colorMode', {
+      label: 'Color mode',
       options: {
         Original: 'original',
         Override: 'override',
@@ -1957,19 +2236,23 @@ function setupControls() {
     })
     .on('change', () => applyCurrentLayerAppearance());
 
-  pane
-    .addBinding(params, 'emissiveStrength', { min: 0, max: 3, step: 0.05 })
-    .on('change', () => {
-      applyEmissiveStrength(triangles, params.emissiveStrength, {
-        wireframeColor: params.wireframeColor,
-      });
+  lookFolder
+    .addBinding(params, 'background', { label: 'Background', ...COLOR_BINDING_OPTS })
+    .on('change', (ev) => {
+      scene.background = new THREE.Color(ev.value);
     });
 
-  pane.addBinding(params, 'bloom', { label: 'Unreal bloom' }).on('change', () => {
+  lookFolder
+    .addBinding(params, 'emissiveStrength', { label: 'Emissive', min: 0, max: 3, step: 0.05 })
+    .on('change', () => {
+      applyEmissiveStrength(triangles, params.emissiveStrength, getLayerColorOptions());
+    });
+
+  lookFolder.addBinding(params, 'bloom', { label: 'Unreal bloom' }).on('change', () => {
     syncPostProcessingOutputs();
     if (params.bloom) resetBloomFade();
   });
-  pane
+  lookFolder
     .addBinding(params, 'bloomIntensity', {
       label: 'Bloom intensity',
       min: 0,
@@ -1982,11 +2265,11 @@ function setupControls() {
         bloomPass.strength = params.bloomIntensity;
       }
     });
-  pane.addBinding(params, 'fxaa', { label: 'FXAA' }).on('change', () => {
+  lookFolder.addBinding(params, 'fxaa', { label: 'FXAA' }).on('change', () => {
     syncPostProcessingOutputs();
   });
 
-  const aberrationFolder = pane.addFolder({ title: 'Chromatic aberration', expanded: false });
+  const aberrationFolder = lookFolder.addFolder({ title: 'Chromatic aberration', expanded: false });
   aberrationFolder
     .addBinding(params.aberration, 'enabled', { label: 'Enabled' })
     .on('change', () => updateAberrationPass());
@@ -2026,21 +2309,7 @@ function setupControls() {
     })
     .on('change', () => updateAberrationPass());
 
-  pane
-    .addBinding(params, 'orbitControls')
-    .on('change', () => {
-      syncOrbitControlsForCameraMode();
-    });
-
-  pane
-    .addBinding(params, 'background', COLOR_BINDING_OPTS)
-    .on('change', (ev) => {
-      scene.background = new THREE.Color(ev.value);
-    });
-
   watchColorPickersForHex();
-
-  pane.addBinding(params, 'finalizeHold', { min: 0, max: 3, step: 0.1 });
 
   playPauseButton = pane.addButton({ title: 'Pause' }).on('click', () => toggleAnimationPause());
   pane.addButton({ title: 'Replay' }).on('click', () => playReveal());
@@ -2061,6 +2330,13 @@ function setupControls() {
   exportFolder.addButton({ title: 'Record 2 loops (MP4)' }).on('click', () => startRecording(2, 'mp4'));
   exportFolder.addButton({ title: 'Record 1 loop (PNG ZIP)' }).on('click', () => startRecording(1, 'png'));
   exportFolder.addButton({ title: 'Record 2 loops (PNG ZIP)' }).on('click', () => startRecording(2, 'png'));
+  for (const height of [1080, 2160]) {
+    for (const loops of [1, 2]) {
+      exportFolder
+        .addButton({ title: `Record ${loops} loop${loops > 1 ? 's' : ''} (ProRes 4444 ${height}p)` })
+        .on('click', () => startRecording(loops, 'mov', { height }));
+    }
+  }
 }
 
 function patternOptions() {
@@ -2079,6 +2355,10 @@ function patternOptions() {
 function easingOptions() {
   return {
     'Ease out back': 'easeOutBack',
+    'Ease out sine': 'easeOutSine',
+    'Ease out cubic': 'easeOutCubic',
+    'Ease out quart': 'easeOutQuart',
+    'Ease out quint': 'easeOutQuint',
     'Ease out expo': 'easeOutExpo',
     'Ease in-out sine': 'easeInOutSine',
     'Ease in-out quad': 'easeInOutQuad',
@@ -2106,6 +2386,11 @@ window.addEventListener('resize', resizeRenderer);
 renderer.domElement.addEventListener(
   'wheel',
   (event) => {
+    if (isCinematicCamera()) {
+      event.preventDefault();
+      zoomCinematicCamera(event.deltaY);
+      return;
+    }
     if (!isOrbitCamera()) return;
     event.preventDefault();
     zoomOrbitCamera(event.deltaY);

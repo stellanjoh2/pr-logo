@@ -17,7 +17,7 @@ export const DEFAULT_WIREFRAME_LINE_WIDTH = 2;
 export const DEFAULT_DOT_PIXEL_SIZE = 6;
 const WIREFRAME_EMISSIVE_BOOST = 1.25;
 /** Default spacing between the 3 primary logo planes (wire+dots / colored / white). */
-export const DEFAULT_LOGO_DEPTH = 0.188;
+export const DEFAULT_LOGO_DEPTH = 0.5;
 /** Merge SVG triangle corners that land on the same point into one shared vertex. */
 const VERTEX_MERGE_DECIMALS = 4;
 
@@ -311,11 +311,11 @@ export function hideBehindLayersForTri(tri) {
   if (tri.mesh) tri.mesh.visible = false;
 }
 
-export function showBehindLayersForTri(tri) {
+export function showBehindLayersForTri(tri, { includeColored = false } = {}) {
   if (!tri) return;
 
-  // Restore wire + dots only. Keep construction (orange) hidden under white so
-  // it can't pop out at the logo-depth gap after the solid reveal.
+  // Construction (orange) stays hidden unless asked for, so it can't pop out
+  // at the logo-depth gap after the solid reveal.
   if (tri.dotFaceMeshes?.length) {
     tri.dotFaceMeshes.forEach((mesh) => setFaceOpacity(mesh.material, 1));
   }
@@ -330,8 +330,8 @@ export function showBehindLayersForTri(tri) {
     }
   }
   if (tri.wireMesh) tri.wireMesh.visible = true;
-  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 0);
-  if (tri.mesh) tri.mesh.visible = false;
+  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, includeColored ? 1 : 0);
+  if (tri.mesh) tri.mesh.visible = includeColored;
 }
 
 function vertexKey(vertex) {
@@ -527,6 +527,7 @@ export function applyColorMode(triangles, mode, options = {}) {
     palette = PALETTE,
     wireframeColor = DEFAULT_WIREFRAME_COLOR,
     solidColor = DEFAULT_SOLID_COLOR,
+    dotColor = wireframeColor,
   } = options;
 
   triangles.forEach((tri, i) => {
@@ -558,7 +559,7 @@ export function applyColorMode(triangles, mode, options = {}) {
     tri.whiteFaceMesh.material.color.set(solidColor);
   });
 
-  applyDotColors(triangles, wireframeColor);
+  applyDotColors(triangles, dotColor);
 }
 
 function applyDotColors(triangles, color = DEFAULT_WIREFRAME_COLOR) {
@@ -650,7 +651,7 @@ export function applyEmissiveStrength(triangles, strength, options = {}) {
     applyWireEmissive(tri.wireFaceMesh.material, getWireEmissiveStrength(strength));
   });
 
-  applyDotColors(triangles, wireframeColor);
+  applyDotColors(triangles, options.dotColor ?? wireframeColor);
 }
 
 function gradientColor(x, y, palette) {

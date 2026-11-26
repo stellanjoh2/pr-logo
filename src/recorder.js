@@ -30,11 +30,11 @@ export function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
-function createRecordSurface(width, height) {
+function createRecordSurface(width, height, { willReadFrequently = false } = {}) {
   const recordCanvas = document.createElement('canvas');
   recordCanvas.width = width;
   recordCanvas.height = height;
-  const recordCtx = recordCanvas.getContext('2d', { alpha: false });
+  const recordCtx = recordCanvas.getContext('2d', { alpha: false, willReadFrequently });
   return { recordCanvas, recordCtx };
 }
 
@@ -269,9 +269,105 @@ export class CanvasPngSequenceRecorder {
   }
 }
 
-export function getRecordingDownloadName(loops, format, stamp = new Date().toISOString().replace(/[:.]/g, '-')) {
+const PRORES_4444_PROFILE = 4;
+
+/**
+ * ProRes 4444 .mov via prores-wasm-encoder (Olivier Estevez, LGPL-2.1+), same encoder as meshgl.
+ * Frames are awaited one at a time, so drive it from a stepped (offline) clock, not real time.
+ */
+export class CanvasProResRecorder {
+  constructor(
+    canvas,
+    { fps = RECORD_FPS, width = RECORD_WIDTH, height = RECORD_HEIGHT } = {},
+  ) {
+    this.canvas = canvas;
+    this.fps = fps;
+    this.width = width;
+    this.height = height;
+    this.frameIndex = 0;
+    this.active = false;
+    this.session = null;
+    this.profileLabel = 'ProRes 4444';
+    const { recordCanvas, recordCtx } = createRecordSurface(width, height, {
+      willReadFrequently: true,
+    });
+    this.recordCanvas = recordCanvas;
+    this.recordCtx = recordCtx;
+  }
+
+  async start() {
+    const { width, height, fps } = this;
+    const options = { width, height, frameRate: fps, profile: PRORES_4444_PROFILE };
+
+    if (typeof Worker !== 'undefined') {
+      try {
+        const mod = await import('prores-wasm-encoder/parallel');
+        const pool = await mod.createProResEncoderPool(options);
+        this.profileLabel = mod.ProfileNames?.[PRORES_4444_PROFILE] ?? this.profileLabel;
+        this.session = {
+          add: (rgba) => pool.addFrameRgba(rgba),
+          finalize: () => pool.finalizeToBlob(),
+          destroy: () => pool.destroy(),
+        };
+      } catch (error) {
+        console.warn('ProRes worker pool unavailable; using single-thread encoder', error);
+      }
+    }
+
+    if (!this.session) {
+      const mod = await import('prores-wasm-encoder');
+      const encoder = await mod.createProResEncoder();
+      encoder.initialize(options);
+      this.session = {
+        add: async (rgba) => {
+          encoder.addFrameRgba(rgba);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+        finalize: async () => encoder.finalizeToBlob(),
+        destroy: async () => encoder.destroy(),
+      };
+    }
+
+    this.frameIndex = 0;
+    this.active = true;
+  }
+
+  /** Must be called right after rendering, before yielding (WebGL drawing buffer is not preserved). */
+  async captureFrame() {
+    if (!this.active || !this.session) return;
+    blitToRecordSurface(this.canvas, this.recordCtx, this.width, this.height);
+    const { data } = this.recordCtx.getImageData(0, 0, this.width, this.height);
+    this.frameIndex += 1;
+    await this.session.add(data);
+  }
+
+  async stop() {
+    if (!this.session) return null;
+    this.active = false;
+    try {
+      const blob = await this.session.finalize();
+      return blob ? new Blob([blob], { type: 'video/quicktime' }) : null;
+    } catch (error) {
+      console.error('ProRes finalize failed:', error);
+      return null;
+    } finally {
+      await this.session.destroy().catch(() => {});
+      this.session = null;
+    }
+  }
+}
+
+export function getRecordingDownloadName(
+  loops,
+  format,
+  stamp = new Date().toISOString().replace(/[:.]/g, '-'),
+  height = RECORD_HEIGHT,
+) {
   if (format === 'png') {
     return `polyrig-${loops}loop-${stamp}-png.zip`;
+  }
+  if (format === 'mov') {
+    return `polyrig-${loops}loop-${stamp}-prores4444-${height}p.mov`;
   }
 
   return `polyrig-${loops}loop-${stamp}.mp4`;

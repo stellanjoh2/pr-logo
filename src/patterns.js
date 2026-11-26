@@ -254,7 +254,7 @@ export function buildDissolveBlinkTweens(
 ) {
   const phases = buildBlinkPhases(true);
 
-  for (const { delay, materials, meshes, sourceTri } of targets) {
+  for (const { delay, materials, meshes, sourceTri, revealColored = false } of targets) {
     setMaterialOpacity(materials, 1);
 
     let t = startOffset + delay;
@@ -266,7 +266,11 @@ export function buildDissolveBlinkTweens(
       timeline.set(mesh, { visible: false }, t);
     }
     if (sourceTri) {
-      timeline.call(() => showBehindLayersForTri(sourceTri), null, t);
+      timeline.call(
+        () => showBehindLayersForTri(sourceTri, { includeColored: revealColored }),
+        null,
+        t,
+      );
     }
   }
 }
