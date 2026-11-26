@@ -49,7 +49,7 @@ const DEFAULT_PARAMS = {
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
-  hoverStyle: 'hard',
+  hoverStyle: 'digital',
   colorMode: 'override',
   overrideColor: DEFAULT_CONSTRUCTION_COLOR,
   wireframeColor: DEFAULT_WIREFRAME_COLOR,
@@ -76,6 +76,70 @@ const params = {
   aberration: { ...defaultAberration },
 };
 
+const urlParams = new URLSearchParams(window.location.search);
+
+function urlFlag(name) {
+  const value = urlParams.get(name);
+  return value === '' || value === '1' || value === 'true';
+}
+
+function applyUrlNumber(key) {
+  const raw = urlParams.get(key);
+  if (raw == null || raw === '') return;
+  const value = Number(raw);
+  if (!Number.isNaN(value)) params[key] = value;
+}
+
+// Same page for authoring + embed: ?embed=1 (or any iframe) strips chrome; ?ui=1 forces the panel hint.
+const forceUi = urlFlag('ui');
+const embedMode = forceUi ? false : urlFlag('embed') || window.self !== window.top;
+const transparentMode = urlFlag('transparent');
+
+const EMBED_NUMBER_KEYS = [
+  'hoverRadius',
+  'coloredRadiusScale',
+  'wireRadiusScale',
+  'dotRadiusScale',
+  'hoverDepth',
+  'logoDepth',
+  'logoScale',
+  'bloomIntensity',
+  'dotPixelSize',
+  'wireframeLineWidth',
+  'emissiveStrength',
+];
+
+const EMBED_COLOR_KEYS = [
+  'background',
+  'wireframeColor',
+  'dotColor',
+  'constructionColor',
+  'solidColor',
+];
+
+for (const key of EMBED_NUMBER_KEYS) applyUrlNumber(key);
+
+function applyUrlColor(key) {
+  const raw = urlParams.get(key);
+  if (!raw) return;
+  params[key] = raw.startsWith('#') ? raw : `#${raw}`;
+}
+
+for (const key of EMBED_COLOR_KEYS) applyUrlColor(key);
+
+{
+  const style = urlParams.get('hoverStyle');
+  if (style === 'smooth' || style === 'digital' || style === 'hard') {
+    params.hoverStyle = style;
+  }
+  if (urlParams.has('bloom')) params.bloom = urlFlag('bloom');
+  if (urlParams.has('fxaa')) params.fxaa = urlFlag('fxaa');
+  if (params.constructionColor) params.overrideColor = params.constructionColor;
+}
+
+document.documentElement.classList.toggle('is-embed', embedMode);
+document.documentElement.classList.toggle('is-transparent', transparentMode);
+
 const LOGO_SCALE_MIN = 0.2;
 const LOGO_SCALE_MAX = 1;
 const LOGO_VERTICAL_FILL = 0.9;
@@ -96,7 +160,6 @@ const HOVER_LAYERS = [
 ];
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(params.background);
 
 const camera = new THREE.PerspectiveCamera(
   CAMERA_FOV,
@@ -105,11 +168,27 @@ const camera = new THREE.PerspectiveCamera(
   200,
 );
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  alpha: true,
+  premultipliedAlpha: true,
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.domElement.style.touchAction = 'none';
 document.body.appendChild(renderer.domElement);
+
+function applyBackground() {
+  if (transparentMode) {
+    scene.background = null;
+    renderer.setClearColor(0x000000, 0);
+    return;
+  }
+  scene.background = new THREE.Color(params.background);
+  renderer.setClearColor(0x000000, 1);
+}
+
+applyBackground();
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -559,9 +638,46 @@ function toggleUi() {
 function mountUiLegend() {
   const el = document.getElementById('ui-legend');
   if (!el) return;
+  if (embedMode) {
+    el.hidden = true;
+    return;
+  }
   window.setTimeout(() => {
     el.classList.add('is-faded');
   }, 3000);
+}
+
+function buildEmbedUrl({ transparent = false } = {}) {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.searchParams.set('embed', '1');
+  if (transparent) url.searchParams.set('transparent', '1');
+
+  // Bake the current tweak session so the iframe matches what you see.
+  for (const key of EMBED_NUMBER_KEYS) {
+    url.searchParams.set(key, String(params[key]));
+  }
+  for (const key of EMBED_COLOR_KEYS) {
+    url.searchParams.set(key, String(params[key]).replace(/^#/, ''));
+  }
+  url.searchParams.set('hoverStyle', params.hoverStyle);
+  url.searchParams.set('bloom', params.bloom ? '1' : '0');
+  url.searchParams.set('fxaa', params.fxaa ? '1' : '0');
+
+  return url.href;
+}
+
+function buildEmbedSnippet({ transparent = false } = {}) {
+  const src = buildEmbedUrl({ transparent });
+  const bg = transparent ? 'background:transparent;' : '';
+  return [
+    '<iframe',
+    `  src="${src}"`,
+    '  title="Polyrig"',
+    '  loading="lazy"',
+    `  style="width:100%;height:420px;border:0;display:block;${bg}"`,
+    '></iframe>',
+  ].join('\n');
 }
 
 function setRecordStatus(message = '', visible = false) {
@@ -667,7 +783,7 @@ function resetAllSettings() {
   Object.assign(params, DEFAULT_PARAMS);
   Object.assign(params.aberration, defaultAberration);
 
-  scene.background = new THREE.Color(params.background);
+  applyBackground();
   updateAberrationPass();
   applyCurrentLayerAppearance();
   resetHoverState();
@@ -680,6 +796,12 @@ async function copySettings() {
       app: 'polyrig-hover',
       capturedAt: new Date().toISOString(),
       params: { ...params, aberration: { ...params.aberration } },
+      embed: {
+        active: embedMode,
+        url: buildEmbedUrl(),
+        transparentUrl: buildEmbedUrl({ transparent: true }),
+        snippet: buildEmbedSnippet(),
+      },
     },
     null,
     2,
@@ -696,7 +818,29 @@ async function copySettings() {
   }
 }
 
+async function copyEmbedCode({ transparent = false } = {}) {
+  const text = buildEmbedSnippet({ transparent });
+  try {
+    await navigator.clipboard.writeText(text);
+    setRecordStatus(
+      transparent ? 'Transparent embed code copied' : 'Embed code copied',
+      true,
+    );
+    window.setTimeout(() => setRecordStatus('', false), 2000);
+  } catch (error) {
+    console.error('Copy embed code failed:', error);
+    setRecordStatus('Copy embed code failed', true);
+    window.setTimeout(() => setRecordStatus('', false), 2500);
+  }
+}
+
 function setupControls() {
+  // Live/embed builds stay static — no tweakpane, no H hint.
+  if (embedMode) {
+    mountUiLegend();
+    return;
+  }
+
   pane = new Pane();
   mountPaneBrandHeader();
   mountPaneFooter();
@@ -852,9 +996,7 @@ function setupControls() {
 
   lookFolder
     .addBinding(params, 'background', { label: 'Background', ...COLOR_BINDING_OPTS })
-    .on('change', (ev) => {
-      scene.background = new THREE.Color(ev.value);
-    });
+    .on('change', () => applyBackground());
 
   lookFolder
     .addBinding(params, 'emissiveStrength', { label: 'Emissive', min: 0, max: 3, step: 0.05 })
@@ -921,6 +1063,10 @@ function setupControls() {
 
   pane.addButton({ title: 'Reset all' }).on('click', () => resetAllSettings());
   pane.addButton({ title: 'Copy settings' }).on('click', () => copySettings());
+  pane.addButton({ title: 'Copy embed code' }).on('click', () => copyEmbedCode());
+  pane
+    .addButton({ title: 'Copy transparent embed' })
+    .on('click', () => copyEmbedCode({ transparent: true }));
   pane.addButton({ title: 'Load SVG file' }).on('click', () => {
     document.getElementById('file-input').click();
   });
@@ -952,6 +1098,7 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 window.addEventListener('blur', releasePointer);
 
 window.addEventListener('keydown', (event) => {
+  if (embedMode) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
     return;
   }

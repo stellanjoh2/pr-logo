@@ -23,6 +23,18 @@
       href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.0.3/700.css"
     />
     <link rel="stylesheet" href="/src/ui.css" />
+    <script>
+      (() => {
+        const q = new URLSearchParams(location.search);
+        const flag = (name) => {
+          const value = q.get(name);
+          return value === '' || value === '1' || value === 'true';
+        };
+        const embed = flag('ui') ? false : flag('embed') || window.self !== window.top;
+        if (embed) document.documentElement.classList.add('is-embed');
+        if (flag('transparent')) document.documentElement.classList.add('is-transparent');
+      })();
+    </script>
   </head>
   <body>
     <input id="file-input" type="file" accept=".svg,image/svg+xml" />

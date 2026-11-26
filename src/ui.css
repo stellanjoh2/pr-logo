@@ -109,6 +109,16 @@ canvas {
   transition: opacity 0.7s var(--pr-ease);
 }
 
+/* Embed: same hover app, no authoring chrome. H still opens the panel for tweaks. */
+html.is-embed #ui-legend {
+  display: none !important;
+}
+
+html.is-transparent,
+html.is-transparent body {
+  background: transparent !important;
+}
+
 #ui-legend kbd {
   display: inline-block;
   margin: 0 0.2em;
