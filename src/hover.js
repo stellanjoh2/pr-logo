@@ -49,7 +49,7 @@ const DEFAULT_PARAMS = {
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
-  hoverStyle: 'smooth',
+  hoverStyle: 'hard',
   colorMode: 'override',
   overrideColor: DEFAULT_CONSTRUCTION_COLOR,
   wireframeColor: DEFAULT_WIREFRAME_COLOR,
@@ -434,6 +434,7 @@ function updateHover(dt) {
 
   const baseRadius = params.hoverRadius * logoSize.x;
   const holderScale = logoHolder.scale.x;
+  const hardPop = params.hoverStyle === 'hard';
 
   for (const tri of triangles) {
     for (const { key, radiusScale, depthScale } of HOVER_LAYERS) {
@@ -444,13 +445,19 @@ function updateHover(dt) {
           hit.x - tri.centroid.x * holderScale,
           hit.y - tri.centroid.y * holderScale,
         );
-        target = hoverFalloff(distance, baseRadius * radiusScale() * holderScale);
+        const radius = baseRadius * radiusScale() * holderScale;
+        if (hardPop) {
+          // One-frame on/off from a hard radius edge — no soft falloff, no fade.
+          target = distance <= radius ? 1 : 0;
+        } else {
+          target = hoverFalloff(distance, radius);
+        }
       }
-      // Digital snaps the target; easing still carries brightness + Z back into place.
       if (params.hoverStyle === 'digital') {
+        // Snap the target; easing still carries brightness + Z back into place.
         target = target >= DIGITAL_THRESHOLD ? 1 : 0;
       }
-      tri.hover[key] = easeToward(tri.hover[key], target, dt);
+      tri.hover[key] = hardPop ? target : easeToward(tri.hover[key], target, dt);
       applyHoverIntensity(tri, key, tri.hover[key], depthScale);
     }
   }
@@ -745,7 +752,7 @@ function setupControls() {
   hoverFolder
     .addBinding(params, 'hoverStyle', {
       label: 'Style',
-      options: { Smooth: 'smooth', Digital: 'digital' },
+      options: { Smooth: 'smooth', Digital: 'digital', Hard: 'hard' },
     })
     .on('change', () => {
       triangles.forEach((tri) => {
