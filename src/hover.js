@@ -161,13 +161,29 @@ function isHoleMode() {
 
 /**
  * Hover-driven layers: white lifts most, then construction, then wire; dots scale only.
- * In hole mode the front layers peel over the widest radius, so white and wire swap radii.
+ * In hole mode the front layers peel over the widest radius, so white and wire swap radii,
+ * and layers sink deeper the further they are from the camera so the gaps only widen.
  */
 const HOVER_LAYERS = [
-  { key: 'white', radiusScale: () => (isHoleMode() ? params.wireRadiusScale : 1), depthScale: 1 },
-  { key: 'colored', radiusScale: () => params.coloredRadiusScale, depthScale: 0.55 },
-  { key: 'wire', radiusScale: () => (isHoleMode() ? 1 : params.wireRadiusScale), depthScale: 0.25 },
-  { key: 'dots', radiusScale: () => params.dotRadiusScale, depthScale: 0 },
+  {
+    key: 'white',
+    radiusScale: () => (isHoleMode() ? params.wireRadiusScale : 1),
+    depthScale: 1,
+    holeDepthScale: 1,
+  },
+  {
+    key: 'colored',
+    radiusScale: () => params.coloredRadiusScale,
+    depthScale: 0.55,
+    holeDepthScale: 2,
+  },
+  {
+    key: 'wire',
+    radiusScale: () => (isHoleMode() ? 1 : params.wireRadiusScale),
+    depthScale: 0.25,
+    holeDepthScale: 3,
+  },
+  { key: 'dots', radiusScale: () => params.dotRadiusScale, depthScale: 0, holeDepthScale: 3 },
 ];
 
 const scene = new THREE.Scene();
@@ -378,6 +394,26 @@ function frameCameraToLogo() {
 
   camera.position.set(0, 0, frontZ + Math.max(widthDistance, heightDistance));
   camera.lookAt(0, 0, 0);
+  applyHoleLayerAlignment();
+}
+
+/**
+ * Hole mode peels one triangle at a time, so every back layer must sit exactly
+ * behind the white from the camera's view. Scaling each layer by its distance
+ * ratio cancels the perspective parallax between the stacked planes.
+ */
+function applyHoleLayerAlignment() {
+  const { wireLayer, dotsLayer, coloredLayer, whiteLayer } = logoLayers;
+  if (!whiteLayer) return;
+  const frontDistance = camera.position.z - whiteLayer.position.z;
+  for (const group of [wireLayer, dotsLayer, coloredLayer, whiteLayer]) {
+    if (!group) continue;
+    const k =
+      isHoleMode() && frontDistance > 0
+        ? (camera.position.z - group.position.z) / frontDistance
+        : 1;
+    group.scale.set(k, k, 1);
+  }
 }
 
 const COLOR_BINDING_OPTS = {
@@ -440,15 +476,15 @@ function showDotsLayer() {
 }
 
 function emptyHoverMap(fill) {
-  return { white: fill, colored: fill, wire: fill, dots: fill };
+  return { white: fill, colored: fill, wire: fill, dots: fill, dent: fill };
 }
 
 function resetHoverState() {
   triangles.forEach((tri) => {
     tri.hover = emptyHoverMap(0);
     tri.hoverShown = emptyHoverMap(-1);
-    for (const { key, depthScale } of HOVER_LAYERS) {
-      applyHoverIntensity(tri, key, 0, depthScale);
+    for (const layer of HOVER_LAYERS) {
+      applyHoverIntensity(tri, layer, 0);
     }
   });
 }
@@ -511,9 +547,15 @@ function layerOpacity(tri, key, value) {
   return hover.colored;
 }
 
-function applyHoverIntensity(tri, key, value, depthScale = 1) {
+function applyHoverIntensity(tri, { key, depthScale, holeDepthScale }, value) {
   const parts = getLayerParts(tri, key);
   const opacity = layerOpacity(tri, key, value);
+  // Lift raises layers toward the camera by their own value. Hole sinks all layers
+  // of a triangle by one shared dent, scaled so deeper layers always move further.
+  const offset = isHoleMode()
+    ? -tri.hover.dent * params.hoverDepth * holeDepthScale
+    : value * params.hoverDepth * depthScale;
+  parts.mesh.position.z = parts.home.z + offset;
 
   if (key === 'dots') {
     applyDotHoverScale(tri, value);
@@ -524,12 +566,7 @@ function applyHoverIntensity(tri, key, value, depthScale = 1) {
     return;
   }
 
-  const { mesh, material, home } = parts;
-  // Brightness and Z share the same eased value so pieces settle back as they dim.
-  // Lift raises layers toward the camera; hole sinks them away from it.
-  const offset = value * params.hoverDepth * depthScale * (isHoleMode() ? -1 : 1);
-  mesh.position.z = home.z + offset;
-
+  const { mesh, material } = parts;
   if (tri.hoverShown[key] === opacity) return;
   tri.hoverShown[key] = opacity;
 
@@ -563,19 +600,38 @@ function updateHover(dt) {
   updatePointerHits();
 
   const baseRadius = params.hoverRadius * logoSize.x;
-  const holderScale = logoHolder.scale.x;
   const hardPop = params.hoverStyle === 'hard';
+  const hole = isHoleMode();
+  const layerScale = {};
+  for (const { key } of HOVER_LAYERS) {
+    layerScale[key] = logoHolder.scale.x * (getLayerGroup(key)?.scale.x ?? 1);
+  }
 
   for (const tri of triangles) {
-    for (const { key, radiusScale, depthScale } of HOVER_LAYERS) {
+    if (hole) {
+      // Smooth crater over the widest peel radius, independent of the hover style snap.
+      let dentTarget = 0;
+      if (layerHitValid.white) {
+        const scale = layerScale.white;
+        const hit = layerHits.white;
+        dentTarget = hoverFalloff(
+          Math.hypot(hit.x - tri.centroid.x * scale, hit.y - tri.centroid.y * scale),
+          baseRadius * HOVER_LAYERS[0].radiusScale() * scale,
+        );
+      }
+      tri.hover.dent = hardPop ? dentTarget : easeToward(tri.hover.dent, dentTarget, dt);
+    }
+
+    for (const { key, radiusScale } of HOVER_LAYERS) {
       let target = 0;
       if (layerHitValid[key]) {
         const hit = layerHits[key];
+        const scale = layerScale[key];
         const distance = Math.hypot(
-          hit.x - tri.centroid.x * holderScale,
-          hit.y - tri.centroid.y * holderScale,
+          hit.x - tri.centroid.x * scale,
+          hit.y - tri.centroid.y * scale,
         );
-        const radius = baseRadius * radiusScale() * holderScale;
+        const radius = baseRadius * radiusScale() * scale;
         if (hardPop) {
           // One-frame on/off from a hard radius edge — no soft falloff, no fade.
           target = distance <= radius ? 1 : 0;
@@ -590,8 +646,8 @@ function updateHover(dt) {
       tri.hover[key] = hardPop ? target : easeToward(tri.hover[key], target, dt);
     }
     // Applied after all layers update: hole-mode opacity reads neighbouring layers.
-    for (const { key, depthScale } of HOVER_LAYERS) {
-      applyHoverIntensity(tri, key, tri.hover[key], depthScale);
+    for (const layer of HOVER_LAYERS) {
+      applyHoverIntensity(tri, layer, tri.hover[layer.key]);
     }
   }
 }
@@ -906,7 +962,10 @@ function setupControls() {
       label: 'Hover mode',
       options: { Lift: 'lift', 'Inverted (hole)': 'hole' },
     })
-    .on('change', () => invalidateHoverShown());
+    .on('change', () => {
+      applyHoleLayerAlignment();
+      invalidateHoverShown();
+    });
 
   const hoverFolder = pane.addFolder({ title: 'Hover', expanded: true });
   hoverFolder.addBinding(params, 'hoverRadius', {
