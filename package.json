@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --open",
-    "build": "vite build",
+    "dev:hover": "vite --open /hover.html",
+    "build": "vite build && PAGE=hover vite build",
     "preview": "vite preview"
   },
   "dependencies": {
