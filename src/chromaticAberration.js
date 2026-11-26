@@ -26,9 +26,9 @@ export function resolveAberrationQualityTier(id) {
 }
 
 export const defaultAberration = Object.freeze({
-  enabled: false,
-  amount: 0.0006,
-  blur: 0,
+  enabled: true,
+  amount: 0.0046,
+  blur: 0.13,
   falloff: 1,
   quality: ABERRATION_QUALITY_DEFAULT,
 });

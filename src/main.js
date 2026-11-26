@@ -87,10 +87,10 @@ const DEFAULT_PARAMS = {
   pattern: 'digital-blink',
   staggerOrder: 'left-to-right',
   duration: 2,
-  staggerSpread: 0.9,
+  staggerSpread: 0.4,
   easing: 'linear',
   loop: true,
-  holdTime: 2,
+  holdTime: 10,
   idle: false,
   idleIntensity: 0.35,
   colorMode: 'override',
@@ -105,13 +105,15 @@ const DEFAULT_PARAMS = {
   layerWireframe: true,
   layerColored: true,
   layerWhite: true,
+  layerTravel: 6,
+  layerLandingTime: 0.85,
   orbitControls: true,
   background: '#000000',
   emissiveStrength: 0.4,
   bloom: true,
   bloomIntensity: 0.65,
   fxaa: true,
-  cameraMode: 'free',
+  cameraMode: 'cinematic',
   orbitSpeed: 1,
   finalizeHold: 0.5,
   finalizeDuration: 0.9,
@@ -201,6 +203,7 @@ let logoLayers = {
   whiteLayer: null,
 };
 let revealTimeline = null;
+let earlierLayerTimelines = [];
 let whiteRevealTimeline = null;
 let whiteRevealStarted = false;
 let emissiveFadeScheduled = false;
@@ -227,6 +230,7 @@ const HOLD_FADE_RATIO = 0.5;
 const FIRST_LETTER_INDEX = 0;
 const LOGO_SCALE_END = 0.7;
 const CAMERA_MOTION_EASE = 'expo.out';
+const LAYER_LANDING_EASE = 'power3.out';
 const recordStatusEl = document.getElementById('record-status');
 
 const defaultCameraPosition = camera.position.clone();
@@ -655,6 +659,8 @@ function loadSvg(svgText) {
 function stopRevealAnimations() {
   revealTimeline?.kill();
   revealTimeline = null;
+  earlierLayerTimelines.forEach((tl) => tl.kill());
+  earlierLayerTimelines = [];
   whiteRevealTimeline?.kill();
   whiteRevealTimeline = null;
   finalizeTimeline?.kill();
@@ -746,6 +752,19 @@ function getRevealStartStates(reverse = false, layer = 'colored') {
   return startStates;
 }
 
+function hasLayerLanding() {
+  return params.layerTravel > 0 && params.layerLandingTime > 0;
+}
+
+function computeLayerLandingEndTime(startStates) {
+  if (!hasLayerLanding()) return 0;
+  let maxDelay = 0;
+  for (const [, start] of startStates) {
+    maxDelay = Math.max(maxDelay, start.delay);
+  }
+  return maxDelay + params.layerLandingTime;
+}
+
 function computeLayerTiming() {
   const triDuration = Math.max(0.15, params.duration * (1 - params.staggerSpread * 0.5));
   const dotsRevealEndTime = isDigitalBlinkPattern(params.pattern)
@@ -761,10 +780,10 @@ function computeLayerTiming() {
     triDuration,
     false,
   );
-  const whiteRevealEndTime = computeRevealEndTime(
-    getRevealStartStates(false, 'white'),
-    triDuration,
-    false,
+  const whiteStartStates = getRevealStartStates(false, 'white');
+  const whiteRevealEndTime = Math.max(
+    computeRevealEndTime(whiteStartStates, triDuration, false),
+    computeLayerLandingEndTime(whiteStartStates),
   );
   const wireStartOffset = dotsRevealEndTime * LAYER_START_RATIO;
   const coloredStartOffset = wireStartOffset + wireRevealEndTime * LAYER_START_RATIO;
@@ -929,12 +948,9 @@ function beginWhiteReveal() {
 }
 
 function getHoldFadeMaterials() {
-  const materials = [];
-  triangles.forEach((tri) => {
-    materials.push(tri.wireFaceMesh.material);
-    materials.push(tri.faceMesh.material);
-  });
-  return materials;
+  // Only the solid (colored) faces — fading wire emissive dims LineMaterial
+  // color to ~30% and the wire looks washed out for the whole dissolve-out.
+  return triangles.map((tri) => tri.faceMesh.material);
 }
 
 function startEmissiveFadeOut(duration, onComplete) {
@@ -1278,6 +1294,7 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
       });
     }
   } else if (layer !== 'all') {
+    const landingOwnsZ = !reverse && hasLayerLanding();
     for (const tri of triangles) {
       const animTri = getAnimTriangle(tri, layer);
       const start = startStates.get(tri);
@@ -1287,13 +1304,30 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
 
       tl.to(
         animTri.mesh.position,
-        { x: toPos.x, y: toPos.y, z: toPos.z, duration: triDuration, ease, delay },
+        landingOwnsZ
+          ? { x: toPos.x, y: toPos.y, duration: triDuration, ease, delay }
+          : { x: toPos.x, y: toPos.y, z: toPos.z, duration: triDuration, ease, delay },
         0,
       );
       tl.to(
         animTri.mesh.scale,
         { x: toScale.x, y: toScale.y, z: toScale.z, duration: triDuration, ease, delay },
         0,
+      );
+    }
+  }
+
+  if (!reverse && layer !== 'all' && hasLayerLanding()) {
+    for (const tri of triangles) {
+      const animTri = getAnimTriangle(tri, layer);
+      const start = startStates.get(tri);
+      const homeZ = animTri.homePosition.z;
+      const fromZ = (useBlinkTweens ? homeZ : start.position.z) + params.layerTravel;
+      tl.fromTo(
+        animTri.mesh.position,
+        { z: fromZ },
+        { z: homeZ, duration: params.layerLandingTime, ease: LAYER_LANDING_EASE },
+        start.delay,
       );
     }
   }
@@ -1330,6 +1364,7 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
     }
     whiteRevealTimeline = tl;
   } else {
+    if (!reverse) earlierLayerTimelines.push(tl);
     revealTimeline = tl;
   }
   return tl;
@@ -1824,7 +1859,7 @@ function setupControls() {
     .on('change', () => playReveal());
 
   pane.addBinding(params, 'loop');
-  pane.addBinding(params, 'holdTime', { min: 0, max: 5, step: 0.1 });
+  pane.addBinding(params, 'holdTime', { min: 0, max: 10, step: 0.1 });
   pane
     .addBinding(params, 'idle')
     .on('change', (ev) => {
@@ -1863,6 +1898,18 @@ function setupControls() {
   layersFolder
     .addBinding(params, 'layerWhite', { label: 'Show solid' })
     .on('change', () => applyLayerVisibility());
+  layersFolder.addBinding(params, 'layerTravel', {
+    label: 'Layer travel',
+    min: 0,
+    max: 6,
+    step: 0.05,
+  });
+  layersFolder.addBinding(params, 'layerLandingTime', {
+    label: 'Layer landing',
+    min: 0,
+    max: 5,
+    step: 0.05,
+  });
   layersFolder
     .addBinding(params, 'wireframeColor', { label: 'Wireframe', ...COLOR_BINDING_OPTS })
     .on('change', () => applyCurrentLayerAppearance());

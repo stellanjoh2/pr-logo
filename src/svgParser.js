@@ -320,7 +320,15 @@ export function showBehindLayersForTri(tri) {
     tri.dotFaceMeshes.forEach((mesh) => setFaceOpacity(mesh.material, 1));
   }
   if (tri.dotMesh) tri.dotMesh.visible = true;
-  if (tri.wireFaceMesh) setFaceOpacity(tri.wireFaceMesh.material, 1);
+  if (tri.wireFaceMesh) {
+    setFaceOpacity(tri.wireFaceMesh.material, 1);
+    // Full base color — don't inherit the dimmed "emissive off" wire look.
+    const mat = tri.wireFaceMesh.material;
+    if (mat.isLineMaterial && mat.userData.baseColor) {
+      mat.color.copy(mat.userData.baseColor);
+      if (mat.userData.glow) mat.userData.glow.emissiveIntensity = 0;
+    }
+  }
   if (tri.wireMesh) tri.wireMesh.visible = true;
   if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 0);
   if (tri.mesh) tri.mesh.visible = false;
@@ -574,7 +582,8 @@ export function applyWireEmissive(material, strength) {
   const base = material.userData.baseColor;
   if (!base) return;
 
-  const scale = strength <= 0.01 ? 0.3 : Math.min(1.6, 0.5 + strength * 0.75);
+  // Glow may only brighten the wire — never dim it below its base color.
+  const scale = Math.min(1.6, Math.max(1, 0.5 + strength * 0.75));
   material.color.copy(base).multiplyScalar(scale);
 }
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {
+  applyWireEmissive,
   setFaceOpacity,
   hideBehindLayersForTri,
   showBehindLayersForTri,
@@ -19,11 +20,7 @@ function getEmissiveTweenTarget(mat) {
 
 function syncEmissiveGlow(mat, intensity) {
   if (mat.isLineMaterial) {
-    mat.userData.glow.emissiveIntensity = intensity;
-    const base = mat.userData.baseColor;
-    if (!base) return;
-    const scale = intensity <= 0.01 ? 0.3 : Math.min(1.6, 0.5 + intensity * 0.75);
-    mat.color.copy(base).multiplyScalar(scale);
+    applyWireEmissive(mat, intensity);
     return;
   }
 
