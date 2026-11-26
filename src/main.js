@@ -4,6 +4,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import gsap from 'gsap';
 import { Pane } from 'tweakpane';
 import defaultSvg from '../pr02.svg?raw';
@@ -108,6 +109,8 @@ const DEFAULT_PARAMS = {
   background: '#000000',
   emissiveStrength: 0.4,
   bloom: true,
+  bloomIntensity: 0.65,
+  fxaa: true,
   cameraMode: 'free',
   orbitSpeed: 1,
   finalizeHold: 0.5,
@@ -143,11 +146,10 @@ document.body.appendChild(renderer.domElement);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const BLOOM_STRENGTH = 0.65;
 const BLOOM_THRESHOLD = 0.82;
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  BLOOM_STRENGTH,
+  params.bloomIntensity,
   0.4,
   BLOOM_THRESHOLD,
 );
@@ -156,7 +158,15 @@ const aberrationPass = new ShaderPass(AberrationShader);
 aberrationPass.uniforms.aspectRatio.value =
   window.innerHeight > 0 ? window.innerWidth / window.innerHeight : 1;
 composer.addPass(aberrationPass);
+const fxaaPass = new ShaderPass(FXAAShader);
+fxaaPass.material.uniforms.resolution.value.set(
+  1 / Math.max(window.innerWidth, 1),
+  1 / Math.max(window.innerHeight, 1),
+);
+composer.addPass(fxaaPass);
 bloomPass.renderToScreen = false;
+aberrationPass.renderToScreen = false;
+fxaaPass.renderToScreen = false;
 syncPostProcessingOutputs();
 applyChromaticAberrationToPass(aberrationPass, params.aberration);
 
@@ -607,7 +617,7 @@ function resetFinalState() {
   resetWhiteLayer(triangles);
   applyCurrentLayerAppearance();
   if (params.bloom) {
-    bloomPass.strength = BLOOM_STRENGTH;
+    bloomPass.strength = params.bloomIntensity;
     bloomPass.threshold = BLOOM_THRESHOLD;
   }
   resetLogoScale();
@@ -833,7 +843,7 @@ function resetBloomFade() {
   bloomFadeTimeline?.kill();
   bloomFadeTimeline = null;
   if (params.bloom) {
-    bloomPass.strength = BLOOM_STRENGTH;
+    bloomPass.strength = params.bloomIntensity;
     bloomPass.threshold = BLOOM_THRESHOLD;
   }
 }
@@ -864,7 +874,7 @@ function startBloomFade() {
     duration: fadeDuration,
     ease: 'sine.inOut',
     onUpdate: () => {
-      bloomPass.strength = BLOOM_STRENGTH * bloom.factor;
+      bloomPass.strength = params.bloomIntensity * bloom.factor;
       bloomPass.threshold = BLOOM_THRESHOLD * bloom.factor;
     },
   });
@@ -1660,15 +1670,21 @@ function toggleUi() {
 }
 
 function usesPostProcessing() {
-  return params.bloom || isChromaticAberrationActive(params.aberration);
+  return params.bloom || isChromaticAberrationActive(params.aberration) || params.fxaa;
 }
 
 function syncPostProcessingOutputs() {
   const bloomOn = params.bloom;
   const aberOn = isChromaticAberrationActive(params.aberration);
+  const fxaaOn = !!params.fxaa;
+
   bloomPass.enabled = bloomOn;
-  bloomPass.renderToScreen = bloomOn && !aberOn;
-  aberrationPass.renderToScreen = aberOn;
+  fxaaPass.enabled = fxaaOn;
+
+  // Last enabled effect owns the screen; earlier passes feed the chain.
+  bloomPass.renderToScreen = bloomOn && !aberOn && !fxaaOn;
+  aberrationPass.renderToScreen = aberOn && !fxaaOn;
+  fxaaPass.renderToScreen = fxaaOn;
 }
 
 function updateAberrationPass() {
@@ -1676,17 +1692,58 @@ function updateAberrationPass() {
   syncPostProcessingOutputs();
 }
 
-function resizeRenderer() {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  camera.aspect = width / height;
+function applyRenderSize(width, height, updateStyle = true) {
+  camera.aspect = width / Math.max(height, 1);
   camera.updateProjectionMatrix();
-  renderer.setSize(width, height);
+  renderer.setSize(width, height, updateStyle);
   composer.setSize(width, height);
   bloomPass.resolution.set(width, height);
   aberrationPass.uniforms.aspectRatio.value = height > 0 ? width / height : 1;
+  fxaaPass.material.uniforms.resolution.value.set(
+    1 / Math.max(width, 1),
+    1 / Math.max(height, 1),
+  );
   updateWireframeLineResolutions(triangles, width, height);
   refreshVertexDotSizes();
+}
+
+function resizeRenderer() {
+  applyRenderSize(window.innerWidth, window.innerHeight, true);
+}
+
+async function exportPngStill(scale = 1) {
+  if (triangles.length === 0 || activeRecorder) return;
+
+  const exportWidth = Math.max(1, Math.round(window.innerWidth * scale));
+  const exportHeight = Math.max(1, Math.round(window.innerHeight * scale));
+  const prevPixelRatio = renderer.getPixelRatio();
+
+  setRecordStatus(`Exporting PNG ${scale}×…`, true);
+
+  try {
+    renderer.setPixelRatio(1);
+    applyRenderSize(exportWidth, exportHeight, false);
+    renderFrame();
+
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+    const blob = await (await fetch(dataUrl)).blob();
+    if (!blob || blob.size === 0) {
+      throw new Error('PNG export produced an empty image.');
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadBlob(blob, `polyrig-still-${scale}x-${stamp}.png`);
+    setRecordStatus('PNG saved', true);
+    window.setTimeout(() => setRecordStatus('', false), 2000);
+  } catch (error) {
+    console.error('PNG export failed:', error);
+    setRecordStatus('PNG export failed', true);
+    window.setTimeout(() => setRecordStatus('', false), 2500);
+  } finally {
+    renderer.setPixelRatio(prevPixelRatio);
+    resizeRenderer();
+    renderFrame();
+  }
 }
 
 function renderFrame() {
@@ -1853,6 +1910,23 @@ function setupControls() {
 
   pane.addBinding(params, 'bloom', { label: 'Unreal bloom' }).on('change', () => {
     syncPostProcessingOutputs();
+    if (params.bloom) resetBloomFade();
+  });
+  pane
+    .addBinding(params, 'bloomIntensity', {
+      label: 'Bloom intensity',
+      min: 0,
+      max: 3,
+      step: 0.05,
+    })
+    .on('change', () => {
+      if (!params.bloom) return;
+      if (!bloomFadeTimeline?.isActive()) {
+        bloomPass.strength = params.bloomIntensity;
+      }
+    });
+  pane.addBinding(params, 'fxaa', { label: 'FXAA' }).on('change', () => {
+    syncPostProcessingOutputs();
   });
 
   const aberrationFolder = pane.addFolder({ title: 'Chromatic aberration', expanded: false });
@@ -1922,10 +1996,14 @@ function setupControls() {
     document.getElementById('file-input').click();
   });
   pane.addButton({ title: 'Reload default (pr02.svg)' }).on('click', () => loadSvg(DEFAULT_SVG));
-  pane.addButton({ title: 'Record 1 loop (MP4)' }).on('click', () => startRecording(1, 'mp4'));
-  pane.addButton({ title: 'Record 2 loops (MP4)' }).on('click', () => startRecording(2, 'mp4'));
-  pane.addButton({ title: 'Record 1 loop (PNG ZIP)' }).on('click', () => startRecording(1, 'png'));
-  pane.addButton({ title: 'Record 2 loops (PNG ZIP)' }).on('click', () => startRecording(2, 'png'));
+
+  const exportFolder = pane.addFolder({ title: 'Export', expanded: true });
+  exportFolder.addButton({ title: 'PNG still (1×)' }).on('click', () => exportPngStill(1));
+  exportFolder.addButton({ title: 'PNG still (2×)' }).on('click', () => exportPngStill(2));
+  exportFolder.addButton({ title: 'Record 1 loop (MP4)' }).on('click', () => startRecording(1, 'mp4'));
+  exportFolder.addButton({ title: 'Record 2 loops (MP4)' }).on('click', () => startRecording(2, 'mp4'));
+  exportFolder.addButton({ title: 'Record 1 loop (PNG ZIP)' }).on('click', () => startRecording(1, 'png'));
+  exportFolder.addButton({ title: 'Record 2 loops (PNG ZIP)' }).on('click', () => startRecording(2, 'png'));
 }
 
 function patternOptions() {

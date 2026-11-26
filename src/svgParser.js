@@ -13,7 +13,7 @@ const PALETTE = Object.values(CLASS_COLORS);
 export const DEFAULT_WIREFRAME_COLOR = '#ff4a1c';
 export const DEFAULT_CONSTRUCTION_COLOR = '#ff4a1c';
 export const DEFAULT_SOLID_COLOR = '#ffffff';
-export const DEFAULT_WIREFRAME_LINE_WIDTH = 1.5;
+export const DEFAULT_WIREFRAME_LINE_WIDTH = 2;
 export const DEFAULT_DOT_PIXEL_SIZE = 6;
 const WIREFRAME_EMISSIVE_BOOST = 1.25;
 /** Default spacing between the 3 primary logo planes (wire+dots / colored / white). */
