@@ -19,6 +19,7 @@ import {
   resetDotsLayer,
   resetWhiteLayer,
   hideColoredLayer,
+  setFaceOpacity,
   updateWireframeLineResolutions,
   updateWireframeLineWidths,
   updateVertexDotSizes,
@@ -28,6 +29,8 @@ import {
   DEFAULT_SOLID_COLOR,
   DEFAULT_WIREFRAME_LINE_WIDTH,
   DEFAULT_DOT_PIXEL_SIZE,
+  DEFAULT_LOGO_DEPTH,
+  applyLogoLayerDepth,
 } from './svgParser.js';
 import { computeStaggerDelays, getShapeCentroid } from './stagger.js';
 import {
@@ -96,6 +99,11 @@ const DEFAULT_PARAMS = {
   solidColor: DEFAULT_SOLID_COLOR,
   wireframeLineWidth: DEFAULT_WIREFRAME_LINE_WIDTH,
   dotPixelSize: DEFAULT_DOT_PIXEL_SIZE,
+  logoDepth: DEFAULT_LOGO_DEPTH,
+  layerDots: true,
+  layerWireframe: true,
+  layerColored: true,
+  layerWhite: true,
   orbitControls: true,
   background: '#000000',
   emissiveStrength: 0.4,
@@ -175,6 +183,12 @@ scene.add(logoHolder);
 
 let triangles = [];
 let shapeCentroid = new THREE.Vector3();
+let logoLayers = {
+  wireLayer: null,
+  dotsLayer: null,
+  coloredLayer: null,
+  whiteLayer: null,
+};
 let revealTimeline = null;
 let whiteRevealTimeline = null;
 let whiteRevealStarted = false;
@@ -183,6 +197,8 @@ let dissolvePending = false;
 let idleTimeline = null;
 let pane = null;
 let cameraModeBinding = null;
+let playPauseButton = null;
+let animationPaused = false;
 let uiVisible = true;
 let finalizeTimeline = null;
 let holdTimeline = null;
@@ -244,6 +260,28 @@ function updateOrbitCamera(delta) {
   camera.position.x = target.x + Math.sin(orbitAngle) * orbitRadius;
   camera.position.z = target.z + Math.cos(orbitAngle) * orbitRadius;
   camera.lookAt(target);
+}
+
+function captureCameraPose() {
+  return {
+    position: camera.position.clone(),
+    target: controls.target.clone(),
+    fov: camera.fov,
+  };
+}
+
+function restoreCameraPose(pose) {
+  if (!pose) return;
+  // Clear damping inertia so OrbitControls can't ease back toward an old front shot.
+  const damping = controls.enableDamping;
+  controls.enableDamping = false;
+  camera.position.copy(pose.position);
+  camera.fov = pose.fov;
+  camera.updateProjectionMatrix();
+  controls.target.copy(pose.target);
+  camera.lookAt(controls.target);
+  controls.update();
+  controls.enableDamping = damping;
 }
 
 function applyCameraModeChange() {
@@ -394,6 +432,12 @@ function clearLogo() {
     logoHolder.remove(child);
   }
   triangles = [];
+  logoLayers = {
+    wireLayer: null,
+    dotsLayer: null,
+    coloredLayer: null,
+    whiteLayer: null,
+  };
 }
 
 function frameCameraToLogo() {
@@ -497,6 +541,18 @@ function getLayerColorOptions() {
   };
 }
 
+function applyLogoDepth() {
+  if (!logoLayers.wireLayer) return;
+  applyLogoLayerDepth(logoLayers, params.logoDepth);
+}
+
+function applyLayerVisibility() {
+  if (logoLayers.dotsLayer) logoLayers.dotsLayer.visible = params.layerDots;
+  if (logoLayers.wireLayer) logoLayers.wireLayer.visible = params.layerWireframe;
+  if (logoLayers.coloredLayer) logoLayers.coloredLayer.visible = params.layerColored;
+  if (logoLayers.whiteLayer) logoLayers.whiteLayer.visible = params.layerWhite;
+}
+
 function applyCurrentLayerAppearance() {
   if (triangles.length === 0) return;
   applyColorMode(triangles, params.colorMode, getLayerColorOptions());
@@ -505,6 +561,8 @@ function applyCurrentLayerAppearance() {
   });
   updateWireframeLineWidths(triangles, params.wireframeLineWidth);
   refreshVertexDotSizes();
+  applyLogoDepth();
+  applyLayerVisibility();
 }
 
 function refreshVertexDotSizes() {
@@ -549,6 +607,12 @@ function loadSvg(svgText) {
     logoHolder.add(dotsLayer);
     logoHolder.add(group);
     logoHolder.add(whiteLayer);
+    logoLayers = {
+      wireLayer,
+      dotsLayer,
+      coloredLayer: group,
+      whiteLayer,
+    };
     triangles = parsed;
     shapeCentroid = getShapeCentroid(triangles);
     applyCurrentLayerAppearance();
@@ -971,20 +1035,21 @@ function finishWhiteReveal() {
 
 function prepareDissolveAllLayers() {
   triangles.forEach((tri) => {
-    // Wire + dots stay hidden and reappear staggered as each white face exits.
-    for (const layer of ['white', 'colored']) {
-      prepareDissolveLayer(layer, tri);
-    }
+    // White exits first; wire + dots reappear staggered. Orange stays hidden.
+    prepareDissolveLayer('white', tri);
+    tri.mesh.visible = false;
+    setFaceOpacity(tri.faceMesh.material, 0);
+
     tri.wireMesh.position.copy(tri.wireHomePosition);
     tri.wireMesh.scale.copy(tri.homeScale);
     tri.wireMesh.visible = false;
-    tri.wireFaceMesh.material.opacity = 0;
+    setFaceOpacity(tri.wireFaceMesh.material, 0);
 
     tri.dotMesh.position.copy(tri.dotHomePosition);
     tri.dotMesh.scale.copy(tri.homeScale);
     tri.dotMesh.visible = false;
     tri.dotFaceMeshes.forEach((mesh) => {
-      mesh.material.opacity = 0;
+      setFaceOpacity(mesh.material, 0);
     });
   });
 }
@@ -998,10 +1063,10 @@ function prepareDissolveLayer(layer, tri = null) {
     animTri.mesh.scale.copy(animTri.homeScale);
     if (animTri.dotFaceMeshes?.length) {
       animTri.dotFaceMeshes.forEach((mesh) => {
-        mesh.material.opacity = 1;
+        setFaceOpacity(mesh.material, 1);
       });
     } else {
-      animTri.faceMesh.material.opacity = 1;
+      setFaceOpacity(animTri.faceMesh.material, 1);
     }
     animTri.mesh.visible = true;
   });
@@ -1062,6 +1127,11 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
         if (!useBlinkTweens) {
           resetToHome(animTri);
         }
+      } else if (useBlinkTweens) {
+        // Keep hidden until each triangle's blink starts — avoids a 1-frame
+        // full-layer flash (especially the raised orange plane).
+        applyStateToMesh(animTri, start);
+        animTri.mesh.visible = false;
       } else {
         applyStateToMesh(animTri, start);
         animTri.mesh.visible = true;
@@ -1238,12 +1308,48 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
   return tl;
 }
 
+function syncPlayPauseButton() {
+  if (playPauseButton) {
+    playPauseButton.title = animationPaused ? 'Play' : 'Pause';
+  }
+}
+
+function setAnimationPaused(paused) {
+  animationPaused = !!paused;
+  if (animationPaused) {
+    gsap.globalTimeline.pause();
+  } else {
+    gsap.globalTimeline.resume();
+  }
+  syncPlayPauseButton();
+}
+
+function toggleAnimationPause() {
+  setAnimationPaused(!animationPaused);
+}
+
 function playReveal() {
+  setAnimationPaused(false);
+
+  const keepCamera = params.cameraMode === 'free' || params.cameraMode === 'orbit';
+  const savedPose = keepCamera ? captureCameraPose() : null;
+
   stopAnimations();
   resetFinalState();
   hideColoredLayer(triangles);
-  // Free/orbit keep the current camera across loops; cinematic reframes via startCameraSequence.
-  startCameraSequence();
+
+  if (params.cameraMode === 'cinematic') {
+    startCameraSequence();
+  }
+
+  // Re-apply after setup so OrbitControls spherical state can't snap back to a prior front shot.
+  if (savedPose) {
+    restoreCameraPose(savedPose);
+    if (isOrbitCamera()) {
+      resetOrbitCameraState();
+    }
+  }
+
   revealPhase = 'dots';
   buildRevealTimeline({ reverse: false, layer: 'dots' });
   startLogoScaleOut();
@@ -1408,6 +1514,7 @@ async function startRecording(loops, format = 'mp4') {
 
   activeRecorder = recorder;
   recordState = { loops, completed: 0, format };
+  setAnimationPaused(false);
   beginRecordingClock();
   setUiVisible(false);
   setRecordStatus(`Recording ${loops} loop${loops > 1 ? 's' : ''} (${formatLabel})…`, true);
@@ -1647,6 +1754,26 @@ function setupControls() {
 
   const layersFolder = pane.addFolder({ title: 'Layers', expanded: true });
   layersFolder
+    .addBinding(params, 'logoDepth', {
+      label: 'Logo depth',
+      min: 0,
+      max: 0.5,
+      step: 0.001,
+    })
+    .on('change', () => applyLogoDepth());
+  layersFolder
+    .addBinding(params, 'layerDots', { label: 'Show dots' })
+    .on('change', () => applyLayerVisibility());
+  layersFolder
+    .addBinding(params, 'layerWireframe', { label: 'Show wireframe' })
+    .on('change', () => applyLayerVisibility());
+  layersFolder
+    .addBinding(params, 'layerColored', { label: 'Show construction' })
+    .on('change', () => applyLayerVisibility());
+  layersFolder
+    .addBinding(params, 'layerWhite', { label: 'Show solid' })
+    .on('change', () => applyLayerVisibility());
+  layersFolder
     .addBinding(params, 'wireframeColor', { label: 'Wireframe', ...COLOR_BINDING_OPTS })
     .on('change', () => applyCurrentLayerAppearance());
   layersFolder
@@ -1761,6 +1888,7 @@ function setupControls() {
 
   pane.addBinding(params, 'finalizeHold', { min: 0, max: 3, step: 0.1 });
 
+  playPauseButton = pane.addButton({ title: 'Pause' }).on('click', () => toggleAnimationPause());
   pane.addButton({ title: 'Replay' }).on('click', () => playReveal());
   pane.addButton({ title: 'Free camera' }).on('click', () => switchToFreeCamera());
   pane.addButton({ title: 'Reset all' }).on('click', () => resetAllSettings());
@@ -1818,12 +1946,21 @@ document.getElementById('file-input').addEventListener('change', (event) => {
 window.addEventListener('resize', resizeRenderer);
 
 window.addEventListener('keydown', (event) => {
-  if (event.key.toLowerCase() !== 'h') return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
     return;
   }
-  event.preventDefault();
-  toggleUi();
+
+  const key = event.key.toLowerCase();
+  if (key === 'h') {
+    event.preventDefault();
+    toggleUi();
+    return;
+  }
+
+  if (key === ' ' || key === 'spacebar') {
+    event.preventDefault();
+    toggleAnimationPause();
+  }
 });
 
 function animate() {
@@ -1834,7 +1971,9 @@ function animate() {
   }
 
   const delta = Math.min(cameraClock.getDelta(), 0.05);
-  updateOrbitCamera(delta);
+  if (!animationPaused) {
+    updateOrbitCamera(delta);
+  }
   controls.update();
   renderFrame();
 }

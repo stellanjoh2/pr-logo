@@ -107,11 +107,14 @@ export function buildDotRevealTweens(
 
     tri.mesh.position.copy(tri.homePosition);
     tri.mesh.scale.copy(tri.homeScale);
-    tri.mesh.visible = true;
-    setMaterialOpacity(materials, 0);
+    tri.mesh.visible = false;
+    if (materials.length) setMaterialOpacity(materials, 0);
 
     const t = startOffset + delay;
-    timeline.call(() => setMaterialOpacity(materials, 1), null, t);
+    timeline.call(() => {
+      tri.mesh.visible = true;
+      if (materials.length) setMaterialOpacity(materials, 1);
+    }, null, t);
   }
 }
 
@@ -235,7 +238,10 @@ function getBlinkMaterials(tri) {
   if (tri.dotFaceMeshes?.length) {
     return tri.dotFaceMeshes.map((mesh) => mesh.material);
   }
-  return [tri.faceMesh.material];
+  if (tri.faceMesh?.material) {
+    return [tri.faceMesh.material];
+  }
+  return [];
 }
 
 function setMaterialOpacity(materials, opacity) {
@@ -280,28 +286,43 @@ export function buildDigitalBlinkTweens(
   for (const { tri, delay, sourceTri } of targets) {
     const materials = getBlinkMaterials(tri);
     const mat = materials[0];
-    const emissiveTarget = getEmissiveTweenTarget(mat);
-    const settleEmissive = reverse
-      ? mat.isLineMaterial && emissiveTarget
-        ? emissiveTarget.emissiveIntensity
-        : mat.emissiveIntensity ?? 0
-      : emissiveStrength;
-    const emissiveOff = settleEmissive <= 0.01 || !emissiveTarget;
+    const emissiveTarget = mat ? getEmissiveTweenTarget(mat) : null;
+    const settleEmissive = !mat
+      ? 0
+      : reverse
+        ? mat.isLineMaterial && emissiveTarget
+          ? emissiveTarget.emissiveIntensity
+          : mat.emissiveIntensity ?? 0
+        : emissiveStrength;
+    const emissiveOff = !mat || settleEmissive <= 0.01 || !emissiveTarget;
 
     tri.mesh.position.copy(tri.homePosition);
     tri.mesh.scale.copy(tri.homeScale);
-    tri.mesh.visible = true;
-    setMaterialOpacity(materials, reverse ? 1 : 0);
+    tri.mesh.visible = reverse;
+    if (materials.length) {
+      setMaterialOpacity(materials, reverse ? 1 : 0);
+    }
     if (!emissiveOff) {
       syncEmissiveGlow(mat, reverse ? settleEmissive : 0);
     }
 
     let t = startOffset + delay;
+    if (!reverse) {
+      timeline.call(() => {
+        tri.mesh.visible = true;
+        // Hide behind as soon as this triangle's white starts. Otherwise
+        // blink-off frames flash the orange/wire/dots planes through the Z gap.
+        if (sourceTri) hideBehindLayersForTri(sourceTri);
+      }, null, t);
+    }
+
     for (let i = 0; i < phases.length; i++) {
       const opacity = phases[i];
       const isLast = i === phases.length - 1;
 
-      timeline.call(() => setMaterialOpacity(materials, opacity), null, t);
+      if (materials.length) {
+        timeline.call(() => setMaterialOpacity(materials, opacity), null, t);
+      }
 
       if (!emissiveOff) {
         const emissiveIntensity =
@@ -313,11 +334,6 @@ export function buildDigitalBlinkTweens(
                 ? 0
                 : flashEmissive(settleEmissive);
         timeline.call(() => syncEmissiveGlow(mat, emissiveIntensity), null, t);
-      }
-
-      // Hide behind layers only after white finishes settling — not during blink gaps.
-      if (sourceTri && isLast && !reverse && opacity > 0.01) {
-        timeline.call(() => hideBehindLayersForTri(sourceTri), null, t);
       }
 
       t += getBlinkStepDuration();
@@ -340,7 +356,7 @@ export function applyStateToMesh(triangle, state) {
       triangle.dotFaceMeshes.forEach((mesh) => {
         setFaceOpacity(mesh.material, state.opacity);
       });
-    } else {
+    } else if (triangle.faceMesh?.material) {
       setFaceOpacity(triangle.faceMesh.material, state.opacity);
     }
   }
@@ -353,7 +369,7 @@ export function resetToHome(triangle) {
     triangle.dotFaceMeshes.forEach((mesh) => {
       setFaceOpacity(mesh.material, 1);
     });
-  } else {
+  } else if (triangle.faceMesh?.material) {
     setFaceOpacity(triangle.faceMesh.material, 1);
   }
 }

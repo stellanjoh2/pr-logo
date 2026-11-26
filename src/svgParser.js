@@ -16,13 +16,25 @@ export const DEFAULT_SOLID_COLOR = '#ffffff';
 export const DEFAULT_WIREFRAME_LINE_WIDTH = 1;
 export const DEFAULT_DOT_PIXEL_SIZE = 2;
 const WIREFRAME_EMISSIVE_BOOST = 1.25;
-const LAYER_Z_STEP = 0.006;
-const WIREFRAME_LAYER_Z_OFFSET = -1.5 * LAYER_Z_STEP;
-const DOTS_LAYER_Z_OFFSET = -0.5 * LAYER_Z_STEP;
-const COLORED_LAYER_Z_OFFSET = 0.5 * LAYER_Z_STEP;
-const WHITE_LAYER_Z_OFFSET = 1.5 * LAYER_Z_STEP;
-const WIREFRAME_CHIP_Z_EPSILON = 0.00005;
-const DOTS_CHIP_Z_EPSILON = 0.000075;
+/** Default spacing between the 3 primary logo planes (wire+dots / colored / white). */
+export const DEFAULT_LOGO_DEPTH = 0.01;
+/** Merge SVG triangle corners that land on the same point into one shared vertex. */
+const VERTEX_MERGE_DECIMALS = 4;
+
+/**
+ * Bottom plane = wire + dots (same Z).
+ * Layer 2 (colored) and layer 3 (white) step toward the camera by `depth`.
+ */
+export function applyLogoLayerDepth(
+  { wireLayer, dotsLayer, coloredLayer, whiteLayer },
+  depth = DEFAULT_LOGO_DEPTH,
+) {
+  const d = Math.max(0, depth);
+  if (wireLayer) wireLayer.position.z = 0;
+  if (dotsLayer) dotsLayer.position.z = 0;
+  if (coloredLayer) coloredLayer.position.z = d;
+  if (whiteLayer) whiteLayer.position.z = d * 2;
+}
 
 export function parseSvgTriangles(svgText) {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
@@ -49,29 +61,33 @@ export function parseSvgTriangles(svgText) {
 
   const wireframeLayer = new THREE.Group();
   wireframeLayer.name = 'wireframeLayer';
-  wireframeLayer.position.z = WIREFRAME_LAYER_Z_OFFSET;
   wireframeLayer.renderOrder = 0;
 
   const dotsLayer = new THREE.Group();
   dotsLayer.name = 'vertexDotsLayer';
-  dotsLayer.position.z = DOTS_LAYER_Z_OFFSET;
   dotsLayer.renderOrder = 1;
 
   const coloredGroup = new THREE.Group();
   coloredGroup.name = 'coloredLayer';
-  coloredGroup.position.z = COLORED_LAYER_Z_OFFSET;
   coloredGroup.renderOrder = 2;
 
   const whiteLayer = new THREE.Group();
   whiteLayer.name = 'whiteLayer';
-  whiteLayer.position.z = WHITE_LAYER_Z_OFFSET;
   whiteLayer.renderOrder = 3;
 
-  const triangles = [];
+  applyLogoLayerDepth(
+    {
+      wireLayer: wireframeLayer,
+      dotsLayer,
+      coloredLayer: coloredGroup,
+      whiteLayer,
+    },
+    DEFAULT_LOGO_DEPTH,
+  );
 
-  for (const raw of rawTriangles) {
-    let worldVerts = raw.points.map(([x, y]) =>
-      new THREE.Vector3((x - centerX) * scale, -(y - centerY) * scale, 0),
+  const prepared = rawTriangles.map((raw) => {
+    const worldVerts = raw.points.map(
+      ([x, y]) => new THREE.Vector3((x - centerX) * scale, -(y - centerY) * scale, 0),
     );
     ensureFacingCamera(worldVerts);
 
@@ -80,6 +96,27 @@ export function parseSvgTriangles(svgText) {
     centroid3.divideScalar(worldVerts.length);
 
     const localVerts = worldVerts.map((v) => v.clone().sub(centroid3));
+    return { raw, worldVerts, centroid3, localVerts };
+  });
+
+  // One shared vertex / one dot per unique position (first triangle owns it for reveal anim).
+  const vertexOwnerByKey = new Map();
+  prepared.forEach((item, triIndex) => {
+    item.worldVerts.forEach((worldVert) => {
+      const key = vertexKey(worldVert);
+      if (!vertexOwnerByKey.has(key)) {
+        vertexOwnerByKey.set(key, {
+          world: worldVert.clone(),
+          ownerIndex: triIndex,
+        });
+      }
+    });
+  });
+
+  const triangles = [];
+
+  for (let triIndex = 0; triIndex < prepared.length; triIndex++) {
+    const { raw, worldVerts, centroid3, localVerts } = prepared[triIndex];
 
     const geometry = createFlatTriangleGeometry(localVerts);
     const wireGeometry = createTriangleWireGeometry(localVerts);
@@ -103,22 +140,24 @@ export function parseSvgTriangles(svgText) {
     wireChip.frustumCulled = false;
     wireChip.add(wireFaceMesh);
     wireChip.position.copy(centroid3);
-    wireChip.position.z += raw.index * WIREFRAME_CHIP_Z_EPSILON;
     wireChip.visible = false;
     wireframeLayer.add(wireChip);
 
     const dotChip = new THREE.Group();
     dotChip.frustumCulled = false;
     const dotFaceMeshes = [];
-    for (const localVert of localVerts) {
+    worldVerts.forEach((worldVert) => {
+      const owned = vertexOwnerByKey.get(vertexKey(worldVert));
+      if (!owned || owned.ownerIndex !== triIndex) return;
+
       const dotMesh = createVertexDotMesh();
-      dotMesh.position.copy(localVert);
+      // Place from welded world position so shared corners stay coincident.
+      dotMesh.position.copy(owned.world).sub(centroid3);
       dotMesh.renderOrder = raw.index + 500;
       dotChip.add(dotMesh);
       dotFaceMeshes.push(dotMesh);
-    }
+    });
     dotChip.position.copy(centroid3);
-    dotChip.position.z += raw.index * DOTS_CHIP_Z_EPSILON;
     dotChip.visible = false;
     dotsLayer.add(dotChip);
 
@@ -131,6 +170,7 @@ export function parseSvgTriangles(svgText) {
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 1,
+      depthWrite: true,
       toneMapped: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,
@@ -204,7 +244,7 @@ export function parseSvgTriangles(svgText) {
 export function resetChipVisibility(triangles) {
   triangles.forEach((tri) => {
     tri.mesh.visible = true;
-    tri.faceMesh.material.opacity = 1;
+    setFaceOpacity(tri.faceMesh.material, 1);
   });
 }
 
@@ -244,13 +284,17 @@ export function resetWhiteLayer(triangles) {
 }
 
 export function setFaceOpacity(material, opacity) {
+  const opaque = opacity >= 0.999;
   material.opacity = opacity;
-  if (!material.userData.solidWhenOpaque) return;
+  // Transparent/invisible faces must not write depth or they punch holes in
+  // wireframe/dots sitting on the plane behind (classic alpha sorting artifact).
+  material.depthWrite = opaque;
 
-  const transparent = opacity < 0.999;
-  if (material.transparent !== transparent) {
-    material.transparent = transparent;
-    material.needsUpdate = true;
+  if (material.userData.solidWhenOpaque) {
+    if (material.transparent !== !opaque) {
+      material.transparent = !opaque;
+      material.needsUpdate = true;
+    }
   }
 }
 
@@ -270,14 +314,24 @@ export function hideBehindLayersForTri(tri) {
 export function showBehindLayersForTri(tri) {
   if (!tri) return;
 
+  // Restore wire + dots only. Keep construction (orange) hidden under white so
+  // it can't pop out at the logo-depth gap after the solid reveal.
   if (tri.dotFaceMeshes?.length) {
     tri.dotFaceMeshes.forEach((mesh) => setFaceOpacity(mesh.material, 1));
   }
   if (tri.dotMesh) tri.dotMesh.visible = true;
   if (tri.wireFaceMesh) setFaceOpacity(tri.wireFaceMesh.material, 1);
   if (tri.wireMesh) tri.wireMesh.visible = true;
-  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 1);
-  if (tri.mesh) tri.mesh.visible = true;
+  if (tri.faceMesh) setFaceOpacity(tri.faceMesh.material, 0);
+  if (tri.mesh) tri.mesh.visible = false;
+}
+
+function vertexKey(vertex) {
+  return [
+    vertex.x.toFixed(VERTEX_MERGE_DECIMALS),
+    vertex.y.toFixed(VERTEX_MERGE_DECIMALS),
+    vertex.z.toFixed(VERTEX_MERGE_DECIMALS),
+  ].join(',');
 }
 
 function createVertexDotMesh() {
@@ -287,7 +341,7 @@ function createVertexDotMesh() {
     transparent: true,
     opacity: 0,
     depthTest: true,
-    depthWrite: true,
+    depthWrite: false,
     toneMapped: false,
   });
   const mesh = new THREE.Mesh(geometry, material);
