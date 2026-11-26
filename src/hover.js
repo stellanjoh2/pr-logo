@@ -45,7 +45,7 @@ const DEFAULT_PARAMS = {
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
   dotRadiusScale: 3.2,
-  hoverDepth: 1.17,
+  hoverDepth: 0.06,
   hoverSoftness: 0.6,
   hoverFadeIn: 0.08,
   hoverFadeOut: 0.6,
@@ -59,6 +59,7 @@ const DEFAULT_PARAMS = {
   wireframeLineWidth: DEFAULT_WIREFRAME_LINE_WIDTH,
   dotPixelSize: DEFAULT_DOT_PIXEL_SIZE,
   logoDepth: 0.5,
+  logoScale: 0.93,
   layerDots: true,
   layerWireframe: true,
   layerColored: true,
@@ -75,7 +76,8 @@ const params = {
   aberration: { ...defaultAberration },
 };
 
-const LOGO_HORIZONTAL_FILL = 0.95;
+const LOGO_SCALE_MIN = 0.2;
+const LOGO_SCALE_MAX = 1;
 const LOGO_VERTICAL_FILL = 0.9;
 const CAMERA_FOV = 35;
 const BLOOM_THRESHOLD = 0.82;
@@ -264,7 +266,8 @@ function frameCameraToLogo() {
 
   const tanHalfFov = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
   const aspect = Math.max(camera.aspect, 0.001);
-  const widthDistance = logoSize.x / (LOGO_HORIZONTAL_FILL * 2 * tanHalfFov * aspect);
+  const fill = THREE.MathUtils.clamp(params.logoScale, LOGO_SCALE_MIN, LOGO_SCALE_MAX);
+  const widthDistance = logoSize.x / (fill * 2 * tanHalfFov * aspect);
   const heightDistance = logoSize.y / (LOGO_VERTICAL_FILL * 2 * tanHalfFov);
   // Fit the resting solid plane; the hover bulge is allowed to swell past this.
   const frontZ = Math.max(0, params.logoDepth) * 2;
@@ -761,6 +764,17 @@ function setupControls() {
     });
 
   const layersFolder = pane.addFolder({ title: 'Layers', expanded: true });
+  layersFolder
+    .addBinding(params, 'logoScale', {
+      label: 'Logo scale',
+      min: LOGO_SCALE_MIN,
+      max: LOGO_SCALE_MAX,
+      step: 0.01,
+    })
+    .on('change', () => {
+      frameCameraToLogo();
+      refreshVertexDotSizes();
+    });
   layersFolder
     .addBinding(params, 'logoDepth', {
       label: 'Logo depth',
