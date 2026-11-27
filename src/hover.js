@@ -46,7 +46,7 @@ const DEFAULT_PARAMS = {
   hoverRadius: 0.055,
   coloredRadiusScale: 1.6,
   wireRadiusScale: 2.4,
-  dotRadiusScale: 3.2,
+  dotRadiusScale: 1.6,
   hoverDepth: 0.95,
   hoverSoftness: 0.1,
   hoverFadeIn: 0.08,
@@ -499,9 +499,9 @@ function loadSvg(svgText) {
   }
 }
 
-function hoverFalloff(distance, radius) {
+function hoverFalloff(distance, radius, softness = params.hoverSoftness) {
   if (radius <= 0) return 0;
-  const inner = radius * (1 - THREE.MathUtils.clamp(params.hoverSoftness, 0, 1));
+  const inner = radius * (1 - THREE.MathUtils.clamp(softness, 0, 1));
   if (distance <= inner) return 1;
   if (distance >= radius) return 0;
   const t = (distance - inner) / (radius - inner);
@@ -609,11 +609,14 @@ function updateHover(dt) {
         if (hardPop) {
           // One-frame on/off from a hard radius edge — no soft falloff, no fade.
           target = distance <= radius ? 1 : 0;
+        } else if (key === 'dots') {
+          // Dots grow on a full gradient toward the cursor so the size change stays readable.
+          target = hoverFalloff(distance, radius, 1);
         } else {
           target = hoverFalloff(distance, radius);
         }
       }
-      if (params.hoverStyle === 'digital') {
+      if (params.hoverStyle === 'digital' && key !== 'dots') {
         // Snap the target; easing still carries brightness + Z back into place.
         target = target >= DIGITAL_THRESHOLD ? 1 : 0;
       }
