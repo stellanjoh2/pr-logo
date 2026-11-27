@@ -109,6 +109,43 @@ canvas {
   transition: opacity 0.7s var(--pr-ease);
 }
 
+body > #page-nav {
+  display: none;
+}
+
+#page-nav {
+  display: flex;
+  margin-top: 18px;
+  border-bottom: 1px solid var(--pr-border);
+}
+
+#page-nav a {
+  flex: 1 1 0;
+  padding: 9px 0;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  text-align: center;
+  color: var(--pr-muted);
+  font: 600 12px/1.4 'Geist Sans', system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-decoration: none;
+  transition:
+    background-color 0.15s var(--pr-ease),
+    color 0.15s var(--pr-ease);
+}
+
+#page-nav a:hover {
+  color: var(--pr-text-strong);
+  background: var(--pr-bg-hover);
+}
+
+#page-nav a[aria-current='page'] {
+  color: var(--pr-accent);
+  border-bottom-color: var(--pr-accent);
+  pointer-events: none;
+}
+
 /* Embed: same hover app, no authoring chrome. H still opens the panel for tweaks. */
 html.is-embed #ui-legend {
   display: none !important;
@@ -207,39 +244,81 @@ html.is-transparent body {
   user-select: none;
 }
 
+.polyrig-pane-toolbar {
+  margin-top: 14px;
+}
+
 .polyrig-pane-footer {
   flex: 0 0 auto;
-  padding: 20px 16px calc(18px + env(safe-area-inset-bottom, 0px));
-  margin-top: 4px;
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--pr-border);
   background: var(--pr-bg);
 }
 
-.polyrig-pane-hide {
-  display: block;
-  width: 100%;
+.polyrig-action-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 8px;
+}
+
+.polyrig-btn {
   height: 35px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 0;
-  background: #2a2a2a;
-  color: var(--pr-accent);
-  font: 600 12px/35px 'Geist Sans', system-ui, sans-serif;
+  font: 600 12px/1 'Geist Sans', system-ui, sans-serif;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   cursor: pointer;
   transition:
     background-color 0.15s var(--pr-ease),
+    border-color 0.15s var(--pr-ease),
     color 0.15s var(--pr-ease),
     box-shadow 0.2s var(--pr-ease);
 }
 
-.polyrig-pane-hide:hover,
-.polyrig-pane-hide:focus-visible {
+.polyrig-btn--secondary {
+  background: #2a2a2a;
+  color: var(--pr-text-strong);
+}
+
+.polyrig-btn--primary {
   background: var(--pr-accent);
+  color: #fff;
+}
+
+.polyrig-btn--ghost {
+  background: transparent;
+  border-color: var(--pr-border);
+  color: var(--pr-muted);
+}
+
+.polyrig-btn--secondary:hover,
+.polyrig-btn--primary:hover {
+  background: var(--pr-accent-hover);
   color: #fff;
   box-shadow:
     0 0 14px color-mix(in srgb, var(--pr-accent) 45%, transparent),
     0 0 28px color-mix(in srgb, var(--pr-accent) 22%, transparent);
-  outline: none;
+}
+
+.polyrig-btn--ghost:hover {
+  border-color: var(--pr-border-strong);
+  color: var(--pr-text-strong);
+}
+
+.polyrig-btn:active {
+  background: var(--pr-accent-active);
+  color: #fff;
+}
+
+.polyrig-btn:focus-visible,
+#page-nav a:focus-visible,
+.tp-btnv_b:focus-visible {
+  outline: 2px solid var(--pr-accent);
+  outline-offset: 2px;
 }
 
 .tp-rotv_b {
@@ -291,7 +370,7 @@ html.is-transparent body {
   font-size: 12px;
   height: 35px;
   line-height: 35px;
-  color: var(--pr-accent);
+  color: var(--pr-text-strong);
   transition:
     background-color 0.15s var(--pr-ease),
     color 0.15s var(--pr-ease),
@@ -314,6 +393,15 @@ html.is-transparent body {
 .tp-lstv_s:active,
 .tp-p2dv_b:active {
   color: #fff !important;
+}
+
+.polyrig-tp-primary .tp-btnv_b {
+  background-color: var(--pr-accent);
+  color: #fff;
+}
+
+.polyrig-tp-primary .tp-btnv_b:hover {
+  background-color: var(--pr-accent-hover);
 }
 
 .tp-lstv_m {

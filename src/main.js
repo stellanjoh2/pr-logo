@@ -67,6 +67,8 @@ import {
   ABERRATION_FALLOFF_MIN,
   ABERRATION_FALLOFF_MAX,
 } from './chromaticAberration.js';
+import { mountPageNav, consumeUiOpenFlag } from './pageNav.js';
+import { createActionRow, markPrimary, confirmReset } from './paneChrome.js';
 
 // Swap SVG source here, or use the file picker in the control panel.
 const DEFAULT_SVG = defaultSvg;
@@ -388,12 +390,6 @@ function applyCameraModeChange() {
   playReveal();
 }
 
-function switchToFreeCamera() {
-  params.cameraMode = 'free';
-  pane?.refresh();
-  applyCameraModeChange();
-}
-
 function applyCameraState({ position, target, fov }, stateName = 'custom') {
   camera.position.set(position[0], position[1], position[2]);
   camera.fov = fov;
@@ -597,6 +593,17 @@ function mountPaneBrandHeader() {
   const brand = document.createElement('div');
   brand.className = 'polyrig-pane-brand';
   brand.innerHTML = `<img class="polyrig-pane-logo-img" src="${buildWhiteLogoDataUrl(DEFAULT_SVG)}" alt="Polyrig" draggable="false" />`;
+  mountPageNav(brand);
+
+  const { row, buttons } = createActionRow([
+    { label: 'Replay', variant: 'primary', onClick: () => playReveal() },
+    { label: 'Pause', title: 'Space', onClick: () => toggleAnimationPause() },
+  ]);
+  row.classList.add('polyrig-pane-toolbar');
+  playPauseButton = buttons[1];
+  syncPlayPauseButton();
+  brand.appendChild(row);
+
   host.insertBefore(brand, host.firstChild);
 }
 
@@ -606,13 +613,15 @@ function mountPaneFooter() {
 
   const footer = document.createElement('div');
   footer.className = 'polyrig-pane-footer';
-
-  const hideBtn = document.createElement('button');
-  hideBtn.type = 'button';
-  hideBtn.className = 'polyrig-pane-hide';
-  hideBtn.textContent = 'Hide UI (H)';
-  hideBtn.addEventListener('click', () => toggleUi());
-  footer.appendChild(hideBtn);
+  footer.appendChild(
+    createActionRow([
+      { label: 'Copy settings', onClick: () => copySettings() },
+      { label: 'Reset all', onClick: () => confirmReset() && resetAllSettings() },
+    ]).row,
+  );
+  footer.appendChild(
+    createActionRow([{ label: 'Hide UI (H)', variant: 'ghost', onClick: () => toggleUi() }]).row,
+  );
 
   host.appendChild(footer);
 }
@@ -1498,7 +1507,7 @@ function buildRevealTimeline({ reverse = false, layer = 'colored' } = {}) {
 
 function syncPlayPauseButton() {
   if (playPauseButton) {
-    playPauseButton.title = animationPaused ? 'Play' : 'Pause';
+    playPauseButton.textContent = animationPaused ? 'Play' : 'Pause';
   }
 }
 
@@ -1917,9 +1926,13 @@ function toggleUi() {
   setUiVisible(!uiVisible);
 }
 
-function mountUiLegend() {
+function mountUiLegend(uiOpen = false) {
   const el = document.getElementById('ui-legend');
   if (!el) return;
+  if (uiOpen) {
+    el.hidden = true;
+    return;
+  }
   window.setTimeout(() => {
     el.classList.add('is-faded');
   }, 3000);
@@ -2031,72 +2044,11 @@ function setupControls() {
   pane = new Pane();
   mountPaneBrandHeader();
   mountPaneFooter();
-  setUiVisible(false);
-  mountUiLegend();
+  const uiOpen = consumeUiOpenFlag();
+  setUiVisible(uiOpen);
+  mountUiLegend(uiOpen);
 
-  const cameraFolder = pane.addFolder({ title: 'Camera', expanded: true });
-  cameraModeBinding = cameraFolder
-    .addBinding(params, 'cameraMode', {
-      label: 'Mode',
-      options: {
-        'Free (review)': 'free',
-        Orbit: 'orbit',
-        'Cinematic Zoom': 'cinematic',
-        'Cinematic Rotate': 'cinematic-rotate',
-      },
-    })
-    .on('change', () => applyCameraModeChange());
-
-  cameraFolder.addButton({ title: 'Free camera' }).on('click', () => switchToFreeCamera());
-  orbitSpeedBinding = cameraFolder.addBinding(params, 'orbitSpeed', {
-    label: 'Orbit speed',
-    min: 0,
-    max: 5,
-    step: 0.05,
-  });
-  cinematicDistanceBinding = cameraFolder
-    .addBinding(params, 'cinematicDistance', {
-      label: 'Distance',
-      min: CINEMATIC_DISTANCE_MIN,
-      max: CINEMATIC_DISTANCE_MAX,
-      step: 0.01,
-    })
-    .on('change', (ev) => setCinematicDistance(ev.value));
-  cinematicZoomOutBinding = cameraFolder
-    .addBinding(params, 'cinematicZoomOut', {
-      label: 'Zoom amount',
-      min: 0,
-      max: 2,
-      step: 0.01,
-    })
-    .on('change', () => playReveal());
-  cinematicRevealDelayBinding = cameraFolder
-    .addBinding(params, 'cinematicRevealDelay', {
-      label: 'Reveal delay',
-      min: 0,
-      max: 5,
-      step: 0.05,
-    })
-    .on('change', () => playReveal());
-  rotateAngleBinding = cameraFolder
-    .addBinding(params, 'cinematicRotateAngle', {
-      label: 'Rotate angle',
-      min: -90,
-      max: 90,
-      step: 1,
-    })
-    .on('change', () => playReveal());
-  cameraEasingBinding = cameraFolder
-    .addBinding(params, 'cameraEasing', { label: 'Camera easing', options: easingOptions() })
-    .on('change', () => playReveal());
-  cameraFolder
-    .addBinding(params, 'orbitControls', { label: 'Orbit controls' })
-    .on('change', () => {
-      syncOrbitControlsForCameraMode();
-    });
-  updateCameraPaneState();
-
-  const logoFolder = pane.addFolder({ title: 'Logo', expanded: true });
+  const logoFolder = pane.addFolder({ title: 'Animation', expanded: true });
   logoFolder
     .addBinding(params, 'pattern', { label: 'Pattern', options: patternOptions() })
     .on('change', () => playReveal());
@@ -2150,6 +2102,70 @@ function setupControls() {
     .on('change', () => {
       if (params.idle) startIdleAnimation();
     });
+
+  const cameraFolder = pane.addFolder({ title: 'Camera', expanded: true });
+  cameraModeBinding = cameraFolder
+    .addBinding(params, 'cameraMode', {
+      label: 'Mode',
+      options: {
+        'Free (review)': 'free',
+        Orbit: 'orbit',
+        'Cinematic Zoom': 'cinematic',
+        'Cinematic Rotate': 'cinematic-rotate',
+      },
+    })
+    .on('change', () => applyCameraModeChange());
+
+  orbitSpeedBinding = cameraFolder.addBinding(params, 'orbitSpeed', {
+    label: 'Orbit speed',
+    min: 0,
+    max: 5,
+    step: 0.05,
+  });
+  cinematicDistanceBinding = cameraFolder
+    .addBinding(params, 'cinematicDistance', {
+      label: 'Distance',
+      min: CINEMATIC_DISTANCE_MIN,
+      max: CINEMATIC_DISTANCE_MAX,
+      step: 0.01,
+    })
+    .on('change', (ev) => setCinematicDistance(ev.value));
+  cinematicZoomOutBinding = cameraFolder
+    .addBinding(params, 'cinematicZoomOut', {
+      label: 'Zoom amount',
+      min: 0,
+      max: 2,
+      step: 0.01,
+    })
+    .on('change', () => playReveal());
+  cinematicRevealDelayBinding = cameraFolder
+    .addBinding(params, 'cinematicRevealDelay', {
+      label: 'Reveal delay',
+      min: 0,
+      max: 5,
+      step: 0.05,
+    })
+    .on('change', () => playReveal());
+  rotateAngleBinding = cameraFolder
+    .addBinding(params, 'cinematicRotateAngle', {
+      label: 'Rotate angle',
+      min: -90,
+      max: 90,
+      step: 1,
+    })
+    .on('change', () => playReveal());
+  cameraEasingBinding = cameraFolder
+    .addBinding(params, 'cameraEasing', { label: 'Camera easing', options: easingOptions() })
+    .on('change', () => playReveal());
+  cameraFolder
+    .addBinding(params, 'orbitControls', { label: 'Orbit controls' })
+    .on('change', () => {
+      syncOrbitControlsForCameraMode();
+    });
+  cameraFolder.addBlade({ view: 'separator' });
+  cameraFolder.addButton({ title: 'Reset camera' }).on('click', () => resetCamera());
+  cameraFolder.addButton({ title: 'Front view' }).on('click', () => resetCameraToFront());
+  updateCameraPaneState();
 
   const layersFolder = pane.addFolder({ title: 'Layers', expanded: true });
   layersFolder
@@ -2311,32 +2327,45 @@ function setupControls() {
 
   watchColorPickersForHex();
 
-  playPauseButton = pane.addButton({ title: 'Pause' }).on('click', () => toggleAnimationPause());
-  pane.addButton({ title: 'Replay' }).on('click', () => playReveal());
-  pane.addButton({ title: 'Free camera' }).on('click', () => switchToFreeCamera());
-  pane.addButton({ title: 'Reset all' }).on('click', () => resetAllSettings());
-  pane.addButton({ title: 'Reset camera to front' }).on('click', () => resetCameraToFront());
-  pane.addButton({ title: 'Reset camera' }).on('click', () => resetCamera());
-  pane.addButton({ title: 'Copy settings' }).on('click', () => copySettings());
-  pane.addButton({ title: 'Load SVG file' }).on('click', () => {
+  const sourceFolder = pane.addFolder({ title: 'Source', expanded: false });
+  sourceFolder.addButton({ title: 'Load SVG file' }).on('click', () => {
     document.getElementById('file-input').click();
   });
-  pane.addButton({ title: 'Reload default (pr02.svg)' }).on('click', () => loadSvg(DEFAULT_SVG));
+  sourceFolder.addButton({ title: 'Restore default logo' }).on('click', () => loadSvg(DEFAULT_SVG));
 
   const exportFolder = pane.addFolder({ title: 'Export', expanded: true });
-  exportFolder.addButton({ title: 'PNG still (1×)' }).on('click', () => exportPngStill(1));
-  exportFolder.addButton({ title: 'PNG still (2×)' }).on('click', () => exportPngStill(2));
-  exportFolder.addButton({ title: 'Record 1 loop (MP4)' }).on('click', () => startRecording(1, 'mp4'));
-  exportFolder.addButton({ title: 'Record 2 loops (MP4)' }).on('click', () => startRecording(2, 'mp4'));
-  exportFolder.addButton({ title: 'Record 1 loop (PNG ZIP)' }).on('click', () => startRecording(1, 'png'));
-  exportFolder.addButton({ title: 'Record 2 loops (PNG ZIP)' }).on('click', () => startRecording(2, 'png'));
-  for (const height of [1080, 2160]) {
-    for (const loops of [1, 2]) {
-      exportFolder
-        .addButton({ title: `Record ${loops} loop${loops > 1 ? 's' : ''} (ProRes 4444 ${height}p)` })
-        .on('click', () => startRecording(loops, 'mov', { height }));
-    }
+  exportFolder.addBinding(exportOptions, 'stillScale', {
+    label: 'Still scale',
+    options: { '1×': 1, '2×': 2 },
+  });
+  exportFolder
+    .addButton({ title: 'Export PNG still' })
+    .on('click', () => exportPngStill(exportOptions.stillScale));
+  exportFolder.addBlade({ view: 'separator' });
+  exportFolder.addBinding(exportOptions, 'format', {
+    label: 'Video format',
+    options: {
+      MP4: 'mp4',
+      'PNG sequence (ZIP)': 'png',
+      'ProRes 4444 · 1080p': 'mov-1080',
+      'ProRes 4444 · 2160p': 'mov-2160',
+    },
+  });
+  exportFolder.addBinding(exportOptions, 'loops', {
+    label: 'Length',
+    options: { '1 loop': 1, '2 loops': 2 },
+  });
+  markPrimary(exportFolder.addButton({ title: 'Record' }).on('click', () => recordExport()));
+}
+
+const exportOptions = { stillScale: 1, format: 'mp4', loops: 1 };
+
+function recordExport() {
+  const { format, loops } = exportOptions;
+  if (format.startsWith('mov-')) {
+    return startRecording(loops, 'mov', { height: Number(format.slice(4)) });
   }
+  return startRecording(loops, format);
 }
 
 function patternOptions() {

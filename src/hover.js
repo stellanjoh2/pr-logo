@@ -30,6 +30,8 @@ import {
   ABERRATION_FALLOFF_MIN,
   ABERRATION_FALLOFF_MAX,
 } from './chromaticAberration.js';
+import { mountPageNav, consumeUiOpenFlag } from './pageNav.js';
+import { createActionRow, markPrimary, confirmReset } from './paneChrome.js';
 const DEFAULT_SVG = defaultSvg;
 
 function downloadBlob(blob, filename) {
@@ -669,6 +671,7 @@ function mountPaneBrandHeader() {
   const brand = document.createElement('div');
   brand.className = 'polyrig-pane-brand';
   brand.innerHTML = `<img class="polyrig-pane-logo-img" src="${buildWhiteLogoDataUrl(DEFAULT_SVG)}" alt="Polyrig" draggable="false" />`;
+  mountPageNav(brand);
   host.insertBefore(brand, host.firstChild);
 }
 
@@ -678,13 +681,15 @@ function mountPaneFooter() {
 
   const footer = document.createElement('div');
   footer.className = 'polyrig-pane-footer';
-
-  const hideBtn = document.createElement('button');
-  hideBtn.type = 'button';
-  hideBtn.className = 'polyrig-pane-hide';
-  hideBtn.textContent = 'Hide UI (H)';
-  hideBtn.addEventListener('click', () => toggleUi());
-  footer.appendChild(hideBtn);
+  footer.appendChild(
+    createActionRow([
+      { label: 'Copy settings', onClick: () => copySettings() },
+      { label: 'Reset all', onClick: () => confirmReset() && resetAllSettings() },
+    ]).row,
+  );
+  footer.appendChild(
+    createActionRow([{ label: 'Hide UI (H)', variant: 'ghost', onClick: () => toggleUi() }]).row,
+  );
 
   host.appendChild(footer);
 }
@@ -719,10 +724,10 @@ function toggleUi() {
   setUiVisible(!uiVisible);
 }
 
-function mountUiLegend() {
+function mountUiLegend(uiOpen = false) {
   const el = document.getElementById('ui-legend');
   if (!el) return;
-  if (embedMode) {
+  if (embedMode || uiOpen) {
     el.hidden = true;
     return;
   }
@@ -931,20 +936,20 @@ function setupControls() {
   pane = new Pane();
   mountPaneBrandHeader();
   mountPaneFooter();
-  setUiVisible(false);
-  mountUiLegend();
+  const uiOpen = !embedMode && consumeUiOpenFlag();
+  setUiVisible(uiOpen);
+  mountUiLegend(uiOpen);
 
-  pane
+  const hoverFolder = pane.addFolder({ title: 'Hover', expanded: true });
+  hoverFolder
     .addBinding(params, 'hoverMode', {
-      label: 'Hover mode',
+      label: 'Mode',
       options: { Lift: 'lift', 'Inverted (hole)': 'hole' },
     })
     .on('change', () => {
       applyHoleLayerAlignment();
       invalidateHoverShown();
     });
-
-  const hoverFolder = pane.addFolder({ title: 'Hover', expanded: true });
   hoverFolder.addBinding(params, 'hoverRadius', {
     label: 'Hover radius',
     min: 0.01,
@@ -1154,21 +1159,30 @@ function setupControls() {
 
   watchColorPickersForHex();
 
-  pane.addButton({ title: 'Reset all' }).on('click', () => resetAllSettings());
-  pane.addButton({ title: 'Copy settings' }).on('click', () => copySettings());
-  pane.addButton({ title: 'Copy embed code' }).on('click', () => copyEmbedCode());
-  pane
-    .addButton({ title: 'Copy transparent embed' })
-    .on('click', () => copyEmbedCode({ transparent: true }));
-  pane.addButton({ title: 'Load SVG file' }).on('click', () => {
+  const sourceFolder = pane.addFolder({ title: 'Source', expanded: false });
+  sourceFolder.addButton({ title: 'Load SVG file' }).on('click', () => {
     document.getElementById('file-input').click();
   });
-  pane.addButton({ title: 'Reload default (pr02.svg)' }).on('click', () => loadSvg(DEFAULT_SVG));
+  sourceFolder.addButton({ title: 'Restore default logo' }).on('click', () => loadSvg(DEFAULT_SVG));
 
   const exportFolder = pane.addFolder({ title: 'Export', expanded: true });
-  exportFolder.addButton({ title: 'PNG still (1×)' }).on('click', () => exportPngStill(1));
-  exportFolder.addButton({ title: 'PNG still (2×)' }).on('click', () => exportPngStill(2));
+  exportFolder.addBinding(exportOptions, 'stillScale', {
+    label: 'Still scale',
+    options: { '1×': 1, '2×': 2 },
+  });
+  markPrimary(
+    exportFolder
+      .addButton({ title: 'Export PNG still' })
+      .on('click', () => exportPngStill(exportOptions.stillScale)),
+  );
+  exportFolder.addBlade({ view: 'separator' });
+  exportFolder.addButton({ title: 'Copy embed code' }).on('click', () => copyEmbedCode());
+  exportFolder
+    .addButton({ title: 'Copy transparent embed' })
+    .on('click', () => copyEmbedCode({ transparent: true }));
 }
+
+const exportOptions = { stillScale: 1 };
 
 document.getElementById('file-input').addEventListener('change', (event) => {
   const file = event.target.files?.[0];
